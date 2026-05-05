@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Streaming Tracker</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+    <header>
+        <div class="header-inner">
+            <div class="header-left">
+                <span class="logo-dot"></span>
+                <h1>Streaming Tracker</h1>
+            </div>
+            <div class="search-wrap">
+                <input type="text" id="search-input" placeholder="搜索作品...">
+                <span class="search-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <div class="filter-bar" id="filter-bar">
+        <!-- Platform pills -->
+        <div class="filter-group" id="provider-filters"></div>
+        <span class="filter-divider"></span>
+        <!-- Type -->
+        <div class="filter-group" id="type-filters">
+            <button class="filter-btn active" data-type="">全部</button>
+            <button class="filter-btn" data-type="movie">电影</button>
+            <button class="filter-btn" data-type="tv">电视剧</button>
+        </div>
+        <span class="filter-divider"></span>
+        <!-- Sort -->
+        <div class="filter-group" id="sort-filters">
+            <button class="filter-btn active" data-sort="rating">评分最高</button>
+            <button class="filter-btn" data-sort="release_date">最新上映</button>
+        </div>
+        <span class="filter-divider"></span>
+        <!-- Year -->
+        <select class="filter-select" id="year-filter">
+            <option value="">全部年份</option>
+        </select>
+        <!-- Rating -->
+        <select class="filter-select" id="rating-filter">
+            <option value="0">全部分数</option>
+            <option value="8">8.0 以上</option>
+            <option value="7.5">7.5 以上</option>
+            <option value="7">7.0 以上</option>
+        </select>
+    </div>
+
+    <div class="stats-bar">
+        <span id="stats-info">加载中...</span>
+    </div>
+
+    <div class="content-area">
+        <div class="titles-grid" id="titles-grid"></div>
+        <div id="scroll-loader" class="scroll-loader hidden">
+            <div class="spinner"></div>
+            加载更多...
+        </div>
+        <div id="scroll-end" class="hidden" style="text-align:center;padding:48px 0;color:var(--text-tertiary);font-size:0.8125rem;letter-spacing:0.02em;">
+            已加载全部作品
+        </div>
+    </div>
+
+    <div id="detail-modal" class="modal-overlay hidden">
+        <div class="modal-panel">
+            <button class="modal-close" id="close-modal">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+            <div class="modal-body" id="detail-content"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js?v=4"></script>
+</body>
+</html>
