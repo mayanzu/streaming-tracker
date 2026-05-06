@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 import logging
 
 from app.api import router
-from app.scheduler import scheduler, init_db
+from app.database import init_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,10 +15,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Starting up...")
     init_db()
-    scheduler.start()
     yield
     logger.info("Shutting down...")
-    scheduler.shutdown()
 
 
 app = FastAPI(title="Streaming Tracker", description="海外流媒体新片追踪", lifespan=lifespan)

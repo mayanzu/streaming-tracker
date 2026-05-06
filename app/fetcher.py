@@ -45,6 +45,7 @@ IMDB_HEADERS = {
 
 
 async def fetch_omdb(imdb_id):
+    """返回 (rating, votes) 或 (None, 0)=无数据 或 (None, -1)=限流"""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(
@@ -56,6 +57,8 @@ async def fetch_omdb(imdb_id):
                 v = data.get('imdbVotes', '0')
                 if r not in (None, 'N/A'):
                     return float(r), int(v.replace(',', ''))
+            elif 'limit' in data.get('Error', '').lower():
+                return None, -1  # 限流，保留现有评分
     except Exception:
         pass
     return None, 0
@@ -111,9 +114,24 @@ async def _check_scrape():
 
 
 async def get_trusted_rating(imdb_id, tmdb_vote_avg, tmdb_vote_count):
-    """TMDB 评分（>=10票），OMDB 恢复后替换为 IMDb"""
+    """IMDb 数据集 → OMDB → TMDB 三级"""
+    # 1. IMDb 官方数据集（本地，秒级）
+    if imdb_id:
+        from app.imdb_data import get_rating
+        rating, votes = get_rating(imdb_id)
+        if rating is not None and votes >= 50:
+            return rating, votes, 'imdb'
+
+    # 2. OMDB（增量新片，数据集未收录时）
+    if imdb_id:
+        rating, votes = await fetch_omdb(imdb_id)
+        if rating is not None and votes >= 100:
+            return rating, votes, 'imdb'
+
+    # 3. TMDB 兜底
     if tmdb_vote_count >= 5 and tmdb_vote_avg > 0:
         return tmdb_vote_avg, tmdb_vote_count, 'tmdb'
+
     return None, 0, None
 
 

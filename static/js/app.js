@@ -139,7 +139,7 @@ function renderTitles(titles, clear) {
         const ratingText = rating > 0 ? rating.toFixed(1) : '—';
         const poster = t.poster_url || 'https://placehold.co/500x750/1a1a1e/5c5c66?text=No+Poster';
         const typeLabel = t.type === 'movie' ? '电影' : '电视剧';
-        const releaseYear = (t.release_date || '').substring(0, 4);
+        const releaseDate = t.release_date || '';
 
         const providersHtml = (t.providers || []).map(p => {
             const color = providerColors[p] || '#666';
@@ -157,7 +157,7 @@ function renderTitles(titles, clear) {
                 <div class="card-title">${t.title}</div>
                 <div class="card-meta">
                     <span class="${ratingCls}">${ratingText}</span>
-                    <span class="card-date">${releaseYear}</span>
+                    <span class="card-date">${releaseDate}</span>
                 </div>
                 <div class="card-overview">${t.overview || ''}</div>
                 <div class="card-providers">${providersHtml}</div>
