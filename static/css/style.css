@@ -43,9 +43,22 @@ html {
     color: var(--text-primary);
     scroll-behavior: smooth;
     font-size: 16px;
+    /* Fix for mobile browser chrome: use dynamic viewport height */
+    height: 100%;
+    /* Prevent overscroll glow on iOS */
+    overscroll-behavior: none;
 }
 
-body { min-height: 100vh; line-height: 1.55; letter-spacing: -0.01em; overflow-x: hidden; }
+/* Use dvh for mobile viewport height issues (address bar) */
+body {
+    min-height: 100dvh;
+    min-height: -webkit-fill-available;
+    line-height: 1.55; letter-spacing: -0.01em;
+    overflow-x: hidden;
+    /* Bottom safe area for mobile home indicator */
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: constant(safe-area-inset-bottom);
+}
 img { max-width: 100%; height: auto; }
 
 /* ---- Typography ---- */
@@ -86,18 +99,26 @@ header {
 .header-left h1 { font-weight: 600; font-size: 1rem; letter-spacing: -0.01em; white-space: nowrap; }
 
 /* ---- Search ---- */
-.search-wrap { flex: 1; min-width: 160px; position: relative; }
+.search-wrap { flex: 1; min-width: 120px; position: relative; }
 .search-wrap input {
     width: 100%; background: var(--bg-tertiary);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: var(--radius-md);
-    padding: 8px 36px 8px 12px;
+    padding: 10px 36px 10px 12px;
     color: var(--text-primary);
-    font-size: 0.85rem; font-family: var(--font-stack);
+    font-size: 16px; /* Prevent iOS zoom on focus */
+    font-family: var(--font-stack);
     letter-spacing: -0.01em; outline: none;
     transition: all var(--transition-fast);
+    /* Mobile optimizations - prevent auto-fill styling */
+    -webkit-appearance: none;
+    appearance: none;
+    /* Prevent iOS from zooming */
+    font-size: max(16px, 1em);
 }
-.search-wrap input::placeholder { color: var(--text-tertiary); font-size: 0.8rem; }
+/* Remove iOS search cancel button */
+.search-wrap input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.search-wrap input::placeholder { color: var(--text-tertiary); font-size: 15px; }
 .search-wrap input:focus {
     border-color: rgba(255,255,255,0.12);
     background: var(--bg-hover);
@@ -118,12 +139,24 @@ header {
 .filter-bar {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 8px;
     padding: 10px var(--content-pad) 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x mandatory;
+    /* Hide scrollbar but keep functionality */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
 }
+.filter-bar::-webkit-scrollbar { display: none; }
 
-.filter-group { display: flex; gap: 5px; flex-shrink: 0; }
+.filter-group {
+    display: flex;
+    gap: 5px;
+    flex-shrink: 0;
+    scroll-snap-align: start;
+}
 
 .filter-btn {
     padding: 6px 14px; border-radius: 100px;
@@ -194,8 +227,12 @@ header {
     transition: transform var(--transition-smooth), box-shadow var(--transition-smooth);
     box-shadow: var(--shadow-card);
     -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation; /* Faster tap response on mobile */
+    /* Prevent flash of overlay on tap */
+    -webkit-user-select: none;
+    user-select: none;
 }
-.title-card:active { transform: scale(0.98); }
+.title-card:active { transform: scale(0.97); }
 
 .title-card .poster-wrap {
     position: relative; aspect-ratio: 2/3;
@@ -270,28 +307,38 @@ header {
     display: flex; align-items: flex-end;
     justify-content: center; z-index: 200;
     animation: fadeIn 200ms ease-out;
+    /* Ensure modal is above mobile browser chrome */
+    -webkit-tap-highlight-color: transparent;
 }
 .modal-overlay.hidden { display: none; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 .modal-panel {
     background: var(--bg-secondary); box-shadow: var(--shadow-modal);
-    width: 100%; max-height: 92vh; overflow-y: auto;
+    width: 100%; max-height: 96vh; overflow-y: auto;
     position: relative;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     animation: slideUp 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    /* iOS momentum scrolling */
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
 }
 @keyframes slideUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
 
 .modal-close {
     position: absolute; top: 12px; right: 12px;
-    width: 32px; height: 32px; border-radius: 50%;
+    width: 44px; height: 44px; /* Larger touch target on mobile */
+    min-width: 44px; min-height: 44px; /* Ensure minimum 44px touch target */
+    border-radius: 50%;
     background: rgba(255,255,255,0.06); border: none;
-    color: var(--text-secondary); font-size: 0.9rem;
+    color: var(--text-secondary); font-size: 1rem;
     cursor: pointer; display: flex; align-items: center; justify-content: center;
     transition: all var(--transition-fast); z-index: 10;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation; /* Faster tap response on mobile */
 }
 .modal-close:hover { background: rgba(255,255,255,0.12); color: var(--text-primary); }
+.modal-close:active { transform: scale(0.94); }
 
 .modal-body { display: flex; flex-direction: column; gap: 18px; padding: 20px; }
 
