@@ -98,6 +98,14 @@ header {
 
 .header-left h1 { font-weight: 600; font-size: 1rem; letter-spacing: -0.01em; white-space: nowrap; }
 
+/* ---- Max-width container ---- */
+header .header-inner,
+.search-bar,
+.filter-bar {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
 /* ---- Search Bar (second row) ---- */
 .search-bar {
     background: rgba(8, 8, 10, 0.88);
@@ -107,7 +115,7 @@ header {
     padding: 8px var(--content-pad);
 }
 
-.search-bar .search-wrap { min-width: unset; }
+.search-bar .search-wrap { max-width: 400px; margin: 0 auto; }
 
 /* ---- Search ---- */
 .search-wrap { position: relative; }
@@ -154,6 +162,8 @@ header {
     gap: 8px;
     padding: 12px var(--content-pad);
     overflow-x: auto;
+    max-width: 1200px;
+    margin: 0 auto;
     -webkit-overflow-scrolling: touch;
     scroll-snap-type: x mandatory;
     /* Hide scrollbar but keep functionality */
