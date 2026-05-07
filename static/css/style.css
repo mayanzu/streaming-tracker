@@ -98,8 +98,19 @@ header {
 
 .header-left h1 { font-weight: 600; font-size: 1rem; letter-spacing: -0.01em; white-space: nowrap; }
 
+/* ---- Search Bar (second row) ---- */
+.search-bar {
+    background: rgba(8, 8, 10, 0.88);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    padding: 8px var(--content-pad);
+}
+
+.search-bar .search-wrap { min-width: unset; }
+
 /* ---- Search ---- */
-.search-wrap { flex: 1; min-width: 120px; position: relative; }
+.search-wrap { position: relative; }
 .search-wrap input {
     width: 100%; background: var(--bg-tertiary);
     border: 1px solid rgba(255,255,255,0.06);
@@ -141,7 +152,7 @@ header {
     align-items: center;
     flex-wrap: nowrap;
     gap: 8px;
-    padding: 10px var(--content-pad) 0;
+    padding: 12px var(--content-pad);
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scroll-snap-type: x mandatory;
