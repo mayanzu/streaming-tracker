@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0a0a0e">
     <title>Streaming Tracker</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
@@ -22,28 +23,31 @@
             </div>
         </div>
         <div class="filter-bar" id="filter-bar">
-            <div class="filter-group" id="provider-filters"></div>
-            <span class="filter-divider"></span>
-            <div class="filter-group" id="type-filters">
-                <button class="filter-btn active" data-type="">全部</button>
-                <button class="filter-btn" data-type="movie">电影</button>
-                <button class="filter-btn" data-type="tv">电视剧</button>
+            <div class="filter-row filter-row-primary">
+                <div class="filter-group" id="provider-filters"></div>
             </div>
-            <span class="filter-divider"></span>
-            <div class="filter-group" id="sort-filters">
-                <button class="filter-btn active" data-sort="rating">评分最高</button>
-                <button class="filter-btn" data-sort="release_date">最新上映</button>
+            <div class="filter-row filter-row-secondary">
+                <div class="filter-group" id="type-filters">
+                    <button class="filter-btn active" data-type="">全部</button>
+                    <button class="filter-btn" data-type="movie">电影</button>
+                    <button class="filter-btn" data-type="tv">电视剧</button>
+                </div>
+                <span class="filter-divider"></span>
+                <div class="filter-group" id="sort-filters">
+                    <button class="filter-btn active" data-sort="rating">评分最高</button>
+                    <button class="filter-btn" data-sort="release_date">最新上映</button>
+                </div>
+                <span class="filter-divider"></span>
+                <select class="filter-select" id="year-filter">
+                    <option value="">全部年份</option>
+                </select>
+                <select class="filter-select" id="rating-filter">
+                    <option value="0">全部分数</option>
+                    <option value="8">8.0 以上</option>
+                    <option value="7.5">7.5 以上</option>
+                    <option value="7">7.0 以上</option>
+                </select>
             </div>
-            <span class="filter-divider"></span>
-            <select class="filter-select" id="year-filter">
-                <option value="">全部年份</option>
-            </select>
-            <select class="filter-select" id="rating-filter">
-                <option value="0">全部分数</option>
-                <option value="8">8.0 以上</option>
-                <option value="7.5">7.5 以上</option>
-                <option value="7">7.0 以上</option>
-            </select>
         </div>
     </header>
 
