@@ -21,36 +21,31 @@
                 </span>
             </div>
         </div>
-        <div class="filter-bar" id="filter-bar"></div>
+        <div class="filter-bar" id="filter-bar">
+            <div class="filter-group" id="provider-filters"></div>
+            <span class="filter-divider"></span>
+            <div class="filter-group" id="type-filters">
+                <button class="filter-btn active" data-type="">全部</button>
+                <button class="filter-btn" data-type="movie">电影</button>
+                <button class="filter-btn" data-type="tv">电视剧</button>
+            </div>
+            <span class="filter-divider"></span>
+            <div class="filter-group" id="sort-filters">
+                <button class="filter-btn active" data-sort="rating">评分最高</button>
+                <button class="filter-btn" data-sort="release_date">最新上映</button>
+            </div>
+            <span class="filter-divider"></span>
+            <select class="filter-select" id="year-filter">
+                <option value="">全部年份</option>
+            </select>
+            <select class="filter-select" id="rating-filter">
+                <option value="0">全部分数</option>
+                <option value="8">8.0 以上</option>
+                <option value="7.5">7.5 以上</option>
+                <option value="7">7.0 以上</option>
+            </select>
+        </div>
     </header>
-        <!-- Platform pills -->
-        <div class="filter-group" id="provider-filters"></div>
-        <span class="filter-divider"></span>
-        <!-- Type -->
-        <div class="filter-group" id="type-filters">
-            <button class="filter-btn active" data-type="">全部</button>
-            <button class="filter-btn" data-type="movie">电影</button>
-            <button class="filter-btn" data-type="tv">电视剧</button>
-        </div>
-        <span class="filter-divider"></span>
-        <!-- Sort -->
-        <div class="filter-group" id="sort-filters">
-            <button class="filter-btn active" data-sort="rating">评分最高</button>
-            <button class="filter-btn" data-sort="release_date">最新上映</button>
-        </div>
-        <span class="filter-divider"></span>
-        <!-- Year -->
-        <select class="filter-select" id="year-filter">
-            <option value="">全部年份</option>
-        </select>
-        <!-- Rating -->
-        <select class="filter-select" id="rating-filter">
-            <option value="0">全部分数</option>
-            <option value="8">8.0 以上</option>
-            <option value="7.5">7.5 以上</option>
-            <option value="7">7.0 以上</option>
-        </select>
-    </div>
 
     <div class="stats-bar">
         <span id="stats-info">加载中...</span>

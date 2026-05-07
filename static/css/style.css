@@ -82,10 +82,11 @@ header {
 .header-inner {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 10px 16px;
-    padding: 10px var(--content-pad);
-    max-width: 100%;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px var(--content-pad);
+    max-width: 1440px;
+    margin: 0 auto;
 }
 
 .header-left { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
@@ -98,30 +99,22 @@ header {
 
 .header-left h1 { font-weight: 600; font-size: 1rem; letter-spacing: -0.01em; white-space: nowrap; }
 
-/* ---- Search Bar (second row) - removed, search now in header) ---- */
-
-/* ---- Search ---- */
-.search-wrap { flex: 1; min-width: 120px; position: relative; }
-
-/* ---- Search ---- */
-.search-wrap { position: relative; }
+/* ---- Search in header ---- */
+.search-wrap { width: 200px; position: relative; }
 .search-wrap input {
     width: 100%; background: var(--bg-tertiary);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: var(--radius-md);
     padding: 10px 36px 10px 12px;
     color: var(--text-primary);
-    font-size: 16px; /* Prevent iOS zoom on focus */
+    font-size: 16px;
     font-family: var(--font-stack);
     letter-spacing: -0.01em; outline: none;
     transition: all var(--transition-fast);
-    /* Mobile optimizations - prevent auto-fill styling */
     -webkit-appearance: none;
     appearance: none;
-    /* Prevent iOS from zooming */
     font-size: max(16px, 1em);
 }
-/* Remove iOS search cancel button */
 .search-wrap input::-webkit-search-cancel-button { -webkit-appearance: none; }
 .search-wrap input::placeholder { color: var(--text-tertiary); font-size: 15px; }
 .search-wrap input:focus {
@@ -129,8 +122,6 @@ header {
     background: var(--bg-hover);
     box-shadow: 0 0 0 3px rgba(255,255,255,0.03);
 }
-
-/* search icon stays inside the input */
 .search-icon {
     position: absolute; right: 10px; top: 50%;
     transform: translateY(-50%);
@@ -138,21 +129,18 @@ header {
     display: flex; align-items: center;
 }
 
-/* ============================================
-   FILTER BAR — horizontal scroll on mobile
-   ============================================ */
+/* ---- Filter bar in header ---- */
 .filter-bar {
     display: flex;
     align-items: center;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 8px;
-    padding: 12px var(--content-pad);
-    overflow-x: auto;
-    max-width: 1200px;
+    padding: 0 var(--content-pad) 12px;
+    max-width: 1440px;
     margin: 0 auto;
+    overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scroll-snap-type: x mandatory;
-    /* Hide scrollbar but keep functionality */
     scrollbar-width: none;
     -ms-overflow-style: none;
 }
@@ -473,7 +461,8 @@ header {
 
     .header-inner { max-width: 1440px; margin: 0 auto; padding: 16px var(--content-pad); flex-wrap: nowrap; justify-content: space-between; }
     .header-left h1 { font-size: 1.25rem; }
-    .search-wrap { max-width: 320px; }
+    .search-wrap { width: 280px; }
+    .filter-bar { flex-wrap: wrap; padding: 0 var(--content-pad) 16px; }
 
     .filter-bar { max-width: 1440px; margin: 0 auto; padding: 0 var(--content-pad) 12px; }
     .stats-bar { max-width: 1440px; margin: 0 auto; padding: 16px var(--content-pad); font-size: 0.85rem; }
