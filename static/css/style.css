@@ -98,24 +98,10 @@ header {
 
 .header-left h1 { font-weight: 600; font-size: 1rem; letter-spacing: -0.01em; white-space: nowrap; }
 
-/* ---- Max-width container ---- */
-header .header-inner,
-.search-bar,
-.filter-bar {
-    max-width: 1200px;
-    margin: 0 auto;
-}
+/* ---- Search Bar (second row) - removed, search now in header) ---- */
 
-/* ---- Search Bar (second row) ---- */
-.search-bar {
-    background: rgba(8, 8, 10, 0.88);
-    backdrop-filter: blur(16px) saturate(180%);
-    -webkit-backdrop-filter: blur(16px) saturate(180%);
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-    padding: 8px var(--content-pad);
-}
-
-.search-bar .search-wrap { max-width: 400px; margin: 0 auto; }
+/* ---- Search ---- */
+.search-wrap { flex: 1; min-width: 120px; position: relative; }
 
 /* ---- Search ---- */
 .search-wrap { position: relative; }
@@ -485,11 +471,11 @@ header .header-inner,
 
     html { font-size: 17px; }
 
-    .header-inner { max-width: 1440px; margin: 0 auto; padding: 16px var(--content-pad); flex-wrap: nowrap; }
+    .header-inner { max-width: 1440px; margin: 0 auto; padding: 16px var(--content-pad); flex-wrap: nowrap; justify-content: space-between; }
     .header-left h1 { font-size: 1.25rem; }
     .search-wrap { max-width: 320px; }
 
-    .filter-bar { max-width: 1440px; margin: 0 auto; padding: 20px var(--content-pad) 0; }
+    .filter-bar { max-width: 1440px; margin: 0 auto; padding: 0 var(--content-pad) 12px; }
     .stats-bar { max-width: 1440px; margin: 0 auto; padding: 16px var(--content-pad); font-size: 0.85rem; }
     .content-area { max-width: 1440px; margin: 0 auto; padding: 32px var(--content-pad) 96px; }
 
