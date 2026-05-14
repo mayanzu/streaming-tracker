@@ -15,6 +15,8 @@ from app.config import (
     SYNC_MINUTE,
     SYNC_TIMEZONE,
     SYNC_BOOTSTRAP_ON_EMPTY,
+    SYNC_BOOTSTRAP_DAYS_BACK,
+    SYNC_BOOTSTRAP_MAX_PAGES,
 )
 from app.sync import get_sync_state, sync_new_titles
 
@@ -81,5 +83,7 @@ def get_scheduler_status(scheduler):
         "days_back": SYNC_DAYS_BACK,
         "max_pages": SYNC_MAX_PAGES,
         "bootstrap_on_empty": SYNC_BOOTSTRAP_ON_EMPTY,
+        "bootstrap_days_back": SYNC_BOOTSTRAP_DAYS_BACK,
+        "bootstrap_max_pages": SYNC_BOOTSTRAP_MAX_PAGES,
         "sync": get_sync_state(),
     }

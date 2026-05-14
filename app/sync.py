@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 
 from app.config import (
     SYNC_BOOTSTRAP_ON_EMPTY,
+    SYNC_BOOTSTRAP_DAYS_BACK,
+    SYNC_BOOTSTRAP_MAX_PAGES,
     SYNC_DAYS_BACK,
     SYNC_MAX_PAGES,
     TMDB_API_KEY,
@@ -107,5 +109,13 @@ async def sync_if_empty():
         logger.info("Database already has %s titles; skipping startup bootstrap sync", total)
         return {"processed": 0, "skipped": 0, "reason": "database_not_empty"}
 
-    logger.info("Database is empty; starting bootstrap TMDB sync")
-    return await sync_new_titles(reason="empty_database_bootstrap")
+    logger.info(
+        "Database is empty; starting bootstrap TMDB sync: days_back=%s max_pages=%s",
+        SYNC_BOOTSTRAP_DAYS_BACK,
+        SYNC_BOOTSTRAP_MAX_PAGES,
+    )
+    return await sync_new_titles(
+        days_back=SYNC_BOOTSTRAP_DAYS_BACK,
+        max_pages=SYNC_BOOTSTRAP_MAX_PAGES,
+        reason="empty_database_bootstrap",
+    )

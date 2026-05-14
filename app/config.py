@@ -60,3 +60,5 @@ SYNC_BOOTSTRAP_ON_EMPTY = os.getenv("SYNC_BOOTSTRAP_ON_EMPTY", "true").lower() i
     "yes",
     "on",
 )
+SYNC_BOOTSTRAP_DAYS_BACK = int(os.getenv("SYNC_BOOTSTRAP_DAYS_BACK", "1825"))
+SYNC_BOOTSTRAP_MAX_PAGES = int(os.getenv("SYNC_BOOTSTRAP_MAX_PAGES", "29"))
