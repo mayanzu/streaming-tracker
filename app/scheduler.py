@@ -14,8 +14,9 @@ from app.config import (
     SYNC_MAX_PAGES,
     SYNC_MINUTE,
     SYNC_TIMEZONE,
+    SYNC_BOOTSTRAP_ON_EMPTY,
 )
-from app.sync import sync_new_titles
+from app.sync import get_sync_state, sync_new_titles
 
 logger = logging.getLogger(__name__)
 JOB_ID = "daily_tmdb_sync"
@@ -39,7 +40,7 @@ def start_scheduler():
     scheduler.add_job(
         sync_new_titles,
         trigger=CronTrigger(hour=SYNC_HOUR, minute=SYNC_MINUTE, timezone=timezone),
-        kwargs={"days_back": SYNC_DAYS_BACK, "max_pages": SYNC_MAX_PAGES},
+        kwargs={"days_back": SYNC_DAYS_BACK, "max_pages": SYNC_MAX_PAGES, "reason": "scheduled"},
         id=JOB_ID,
         replace_existing=True,
         max_instances=1,
@@ -79,4 +80,6 @@ def get_scheduler_status(scheduler):
         "timezone": SYNC_TIMEZONE,
         "days_back": SYNC_DAYS_BACK,
         "max_pages": SYNC_MAX_PAGES,
+        "bootstrap_on_empty": SYNC_BOOTSTRAP_ON_EMPTY,
+        "sync": get_sync_state(),
     }

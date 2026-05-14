@@ -54,3 +54,9 @@ SYNC_MINUTE = int(os.getenv("SYNC_MINUTE", "0"))
 SYNC_TIMEZONE = os.getenv("SYNC_TIMEZONE", "Asia/Shanghai")
 SYNC_DAYS_BACK = int(os.getenv("SYNC_DAYS_BACK", "30"))
 SYNC_MAX_PAGES = int(os.getenv("SYNC_MAX_PAGES", "5"))
+SYNC_BOOTSTRAP_ON_EMPTY = os.getenv("SYNC_BOOTSTRAP_ON_EMPTY", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)

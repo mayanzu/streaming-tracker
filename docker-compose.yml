@@ -15,4 +15,5 @@ services:
       - SYNC_TIMEZONE=${SYNC_TIMEZONE:-Asia/Shanghai}
       - SYNC_DAYS_BACK=${SYNC_DAYS_BACK:-30}
       - SYNC_MAX_PAGES=${SYNC_MAX_PAGES:-5}
+      - SYNC_BOOTSTRAP_ON_EMPTY=${SYNC_BOOTSTRAP_ON_EMPTY:-true}
     restart: unless-stopped

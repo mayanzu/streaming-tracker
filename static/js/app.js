@@ -15,6 +15,7 @@ const providerNames = {
 };
 
 let providerCounts = {};
+let bootstrapPollTimer = null;
 const posterFallback = `data:image/svg+xml,${encodeURIComponent(`
 <svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750">
   <rect width="500" height="750" fill="#18181e"/>
@@ -81,6 +82,7 @@ async function loadYears() {
         const res = await fetch('/api/stats');
         const data = await res.json();
         const select = document.getElementById('year-filter');
+        select.innerHTML = '<option value="">全部年份</option>';
         (data.years || []).forEach(y => {
             const o = document.createElement('option'); o.value = y; o.textContent = y;
             select.appendChild(o);
@@ -121,6 +123,9 @@ async function loadTitles() {
 
         state.hasMore = (state.page * state.limit) < data.total;
         document.getElementById('scroll-sentinel').classList.toggle('hidden', !state.hasMore);
+        if (state.page === 1 && data.total === 0 && !hasActiveFilters()) {
+            checkBootstrapSync();
+        }
         if (!state.hasMore && data.total > 0) {
             loader.classList.add('hidden');
             end.classList.remove('hidden');
@@ -136,6 +141,39 @@ async function loadTitles() {
         state.loading = false;
         loader.classList.add('hidden');
     }
+}
+
+function hasActiveFilters() {
+    return Boolean(state.provider || state.type || state.search || state.year || state.rating > 0);
+}
+
+async function checkBootstrapSync() {
+    try {
+        const res = await fetch('/api/sync/status');
+        if (!res.ok) return;
+        const status = await res.json();
+        const sync = status.sync || {};
+        if (!sync.running) return;
+
+        document.getElementById('stats-info').textContent = '首次部署正在抓取 TMDB 数据...';
+        document.getElementById('titles-grid').innerHTML = `<div class="empty-state">
+            <div class="spinner"></div>
+            <p>正在抓取首批作品，稍后会自动刷新</p>
+        </div>`;
+
+        if (!bootstrapPollTimer) {
+            bootstrapPollTimer = setInterval(async () => {
+                const next = await fetch('/api/sync/status').then(r => r.json()).catch(() => null);
+                if (!next?.sync?.running) {
+                    clearInterval(bootstrapPollTimer);
+                    bootstrapPollTimer = null;
+                    await loadProviders();
+                    await loadYears();
+                    resetAndLoad();
+                }
+            }, 10000);
+        }
+    } catch (e) {}
 }
 
 function renderTitles(titles, clear) {

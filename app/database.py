@@ -104,6 +104,15 @@ def insert_title(title_data):
         conn.close()
 
 
+def count_titles():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM titles")
+    total = cursor.fetchone()[0]
+    conn.close()
+    return total
+
+
 def _build_title_filters(provider=None, title_type=None, search=None, year=None, min_rating=None):
     filters = []
     params = []
