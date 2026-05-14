@@ -267,22 +267,6 @@ def record_sync_error(sync_run_id, scope, message):
     conn.close()
 
 
-def get_latest_sync_run():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT *
-        FROM sync_runs
-        ORDER BY started_at DESC, id DESC
-        LIMIT 1
-        """
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
 def get_latest_finished_sync_run():
     conn = None
     try:
