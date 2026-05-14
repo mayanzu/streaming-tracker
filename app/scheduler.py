@@ -18,6 +18,7 @@ from app.config import (
     SYNC_BOOTSTRAP_ON_EMPTY,
     SYNC_BOOTSTRAP_DAYS_BACK,
     SYNC_BOOTSTRAP_MAX_PAGES,
+    SYNC_BOOTSTRAP_WINDOW_DAYS,
 )
 from app.database import get_latest_finished_sync_run
 from app.sync import get_sync_state, sync_new_titles
@@ -96,6 +97,7 @@ def get_scheduler_status(scheduler):
         "bootstrap_on_empty": SYNC_BOOTSTRAP_ON_EMPTY,
         "bootstrap_days_back": SYNC_BOOTSTRAP_DAYS_BACK,
         "bootstrap_max_pages": SYNC_BOOTSTRAP_MAX_PAGES,
+        "bootstrap_window_days": SYNC_BOOTSTRAP_WINDOW_DAYS,
         "sync": get_sync_state(),
         "latest_finished_sync": latest_finished_sync,
     }

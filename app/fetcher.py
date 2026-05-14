@@ -134,7 +134,7 @@ def _date_windows(days_back, window_days):
         end = start - timedelta(days=1)
 
 
-async def fetch_new_releases(provider_name, days_back=1825, max_pages=29, window_days=90, client=None):
+async def fetch_new_releases(provider_name, days_back=1825, max_pages=10, window_days=365, client=None):
     """获取平台新片，不在 discover 阶段按评分过滤。"""
     if provider_name not in PROVIDERS:
         raise ValueError(f"Unknown provider: {provider_name}")
@@ -167,6 +167,7 @@ async def fetch_new_releases(provider_name, days_back=1825, max_pages=29, window
                 page_results = data.get("results", [])
                 if not page_results:
                     break
+                total_pages = min(data.get("total_pages", page) or page, max_pages)
 
                 for item in page_results:
                     if not item.get("poster_path"):
@@ -190,6 +191,9 @@ async def fetch_new_releases(provider_name, days_back=1825, max_pages=29, window
                         "added_date": added_date,
                         "providers": [provider_name],
                     }
+
+                if page >= total_pages:
+                    break
 
     return list(results.values())
 
@@ -228,11 +232,8 @@ async def enrich_with_imdb(title_data, client=None):
     return title_data
 
 
-async def fetch_all_providers(days_back=1825, max_pages=29, window_days=90):
-    """全平台抓取 -> 评分补全 -> 只返回达标作品。"""
-    sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
-    all_titles = []
-    stats = {
+def empty_fetch_stats():
+    return {
         "discovered": 0,
         "qualified": 0,
         "no_rating": 0,
@@ -240,65 +241,77 @@ async def fetch_all_providers(days_back=1825, max_pages=29, window_days=90):
         "errors": [],
     }
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        for provider_name in PROVIDERS:
-            logger.info("Fetching provider=%s", provider_name)
 
-            try:
-                titles = await fetch_new_releases(
-                    provider_name,
-                    days_back=days_back,
-                    max_pages=max_pages,
-                    window_days=window_days,
-                    client=client,
-                )
-                stats["discovered"] += len(titles)
-                logger.info("TMDB discover provider=%s count=%s", provider_name, len(titles))
+def merge_fetch_stats(total, partial):
+    for key in ("discovered", "qualified", "no_rating", "low_rating"):
+        total[key] += partial.get(key, 0)
+    total["errors"].extend(partial.get("errors", []))
 
-                async def enrich_one(title):
-                    async with sem:
-                        return await enrich_with_imdb(title, client=client)
 
-                enriched_titles = await asyncio.gather(*(enrich_one(title) for title in titles))
-                qualified = [
-                    title
-                    for title in enriched_titles
-                    if title["imdb_rating"] is not None
-                    and title.get("rating_source") in TRUSTED_RATING_SOURCES
-                    and title["imdb_rating"] >= MIN_IMDB_RATING
-                ]
-                no_rating = sum(
-                    1
-                    for title in enriched_titles
-                    if title["imdb_rating"] is None
-                    or title.get("rating_source") not in TRUSTED_RATING_SOURCES
-                )
-                low_rating = len(enriched_titles) - len(qualified) - no_rating
+async def fetch_provider_titles(
+    provider_name,
+    days_back=1825,
+    max_pages=10,
+    window_days=365,
+    client=None,
+):
+    """抓取单个平台，评分补全后只返回达标作品。"""
+    sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(timeout=20)
 
-                stats["qualified"] += len(qualified)
-                stats["no_rating"] += no_rating
-                stats["low_rating"] += low_rating
-                logger.info(
-                    "Qualified provider=%s count=%s no_rating=%s low_rating=%s",
-                    provider_name,
-                    len(qualified),
-                    no_rating,
-                    low_rating,
-                )
+    stats = empty_fetch_stats()
+    qualified = []
 
-                all_titles.extend(qualified)
+    try:
+        logger.info("Fetching provider=%s", provider_name)
+        titles = await fetch_new_releases(
+            provider_name,
+            days_back=days_back,
+            max_pages=max_pages,
+            window_days=window_days,
+            client=client,
+        )
+        stats["discovered"] += len(titles)
+        logger.info("TMDB discover provider=%s count=%s", provider_name, len(titles))
 
-            except Exception as exc:
-                message = f"{provider_name}: {exc}"
-                stats["errors"].append(message)
-                logger.exception("Failed to fetch provider=%s", provider_name)
+        async def enrich_one(title):
+            async with sem:
+                return await enrich_with_imdb(title, client=client)
 
-    stats["qualified"] = len(all_titles)
-    logger.info(
-        "Fetch finished discovered=%s qualified=%s no_rating=%s low_rating=%s",
-        stats["discovered"],
-        stats["qualified"],
-        stats["no_rating"],
-        stats["low_rating"],
-    )
-    return {"titles": all_titles, "stats": stats}
+        enriched_titles = await asyncio.gather(*(enrich_one(title) for title in titles))
+        qualified = [
+            title
+            for title in enriched_titles
+            if title["imdb_rating"] is not None
+            and title.get("rating_source") in TRUSTED_RATING_SOURCES
+            and title["imdb_rating"] >= MIN_IMDB_RATING
+        ]
+        no_rating = sum(
+            1
+            for title in enriched_titles
+            if title["imdb_rating"] is None
+            or title.get("rating_source") not in TRUSTED_RATING_SOURCES
+        )
+        low_rating = len(enriched_titles) - len(qualified) - no_rating
+
+        stats["qualified"] = len(qualified)
+        stats["no_rating"] = no_rating
+        stats["low_rating"] = low_rating
+        logger.info(
+            "Qualified provider=%s count=%s no_rating=%s low_rating=%s",
+            provider_name,
+            len(qualified),
+            no_rating,
+            low_rating,
+        )
+    except Exception as exc:
+        message = f"{provider_name}: {exc}"
+        stats["errors"].append(message)
+        logger.exception("Failed to fetch provider=%s", provider_name)
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    return {"provider": provider_name, "titles": qualified, "stats": stats}

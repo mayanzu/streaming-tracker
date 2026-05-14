@@ -7,7 +7,9 @@ import subprocess
 from app.config import (
     DATABASE_URL,
     ROUTER_TARGET,
-    SYNC_WINDOW_DAYS,
+    SYNC_BOOTSTRAP_DAYS_BACK,
+    SYNC_BOOTSTRAP_MAX_PAGES,
+    SYNC_BOOTSTRAP_WINDOW_DAYS,
 )
 from app.sync import sync_new_titles
 
@@ -32,12 +34,22 @@ def upload_database():
 
 async def main():
     parser = argparse.ArgumentParser(description="streaming-tracker 本地同步脚本")
-    parser.add_argument("--days-back", type=int, default=1825, help="抓取最近 N 天内容")
-    parser.add_argument("--max-pages", type=int, default=5, help="每类内容最多抓取页数")
+    parser.add_argument(
+        "--days-back",
+        type=int,
+        default=SYNC_BOOTSTRAP_DAYS_BACK,
+        help="抓取最近 N 天内容",
+    )
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=SYNC_BOOTSTRAP_MAX_PAGES,
+        help="每类内容最多抓取页数",
+    )
     parser.add_argument(
         "--window-days",
         type=int,
-        default=SYNC_WINDOW_DAYS,
+        default=SYNC_BOOTSTRAP_WINDOW_DAYS,
         help="把抓取时间范围拆成 N 天一个窗口，避免长时间范围被 TMDB 分页截断",
     )
     parser.add_argument("--skip-fetch", action="store_true", help="跳过新片抓取")
