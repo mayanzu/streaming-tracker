@@ -14,6 +14,11 @@ const providerNames = {
     amazon: 'Prime Video', apple: 'Apple TV+', hulu: 'Hulu'
 };
 
+const ratingSourceNames = {
+    imdb: 'IMDb',
+    omdb: 'IMDb'
+};
+
 let providerCounts = {};
 let bootstrapPollTimer = null;
 const posterFallback = `data:image/svg+xml,${encodeURIComponent(`
@@ -34,6 +39,7 @@ function escapeHtml(value) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    await loadSyncStatus();
     await loadProviders();
     await loadYears();
     loadTitles();
@@ -41,10 +47,76 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupInfiniteScroll();
 });
 
+async function loadSyncStatus() {
+    try {
+        const res = await fetch('/api/sync/status');
+        if (!res.ok) return null;
+        const status = await res.json();
+        renderSyncStatus(status);
+        return status;
+    } catch (e) {
+        return null;
+    }
+}
+
+function renderSyncStatus(status) {
+    const el = document.getElementById('sync-info');
+    if (!el) return;
+
+    const sync = status.sync || {};
+    const latestFinished = status.latest_finished_sync || {};
+    const last = sync.last_result || latestFinished || {};
+
+    if (sync.running) {
+        el.textContent = sync.current_reason === 'untrusted_rating_rebuild'
+            ? 'IMDb 重建中'
+            : '同步中';
+        el.className = 'sync-pill active';
+        return;
+    }
+
+    if (last.reason === 'missing_tmdb_api_key') {
+        el.textContent = '缺少 TMDB Key';
+        el.className = 'sync-pill danger';
+        return;
+    }
+
+    if (last.reason === 'sync_failed') {
+        el.textContent = '同步失败';
+        el.className = 'sync-pill danger';
+        return;
+    }
+
+    if (latestFinished.status === 'failed') {
+        el.textContent = '上次同步失败';
+        el.className = 'sync-pill danger';
+        return;
+    }
+
+    if (latestFinished.finished_at) {
+        const finishedAt = new Date(latestFinished.finished_at);
+        if (!Number.isNaN(finishedAt.getTime())) {
+            if (latestFinished.status === 'partial') {
+                el.textContent = `部分同步 ${finishedAt.toLocaleDateString('zh-CN')}`;
+                el.className = 'sync-pill warn';
+                return;
+            }
+            el.textContent = `上次同步 ${finishedAt.toLocaleDateString('zh-CN')}`;
+            el.className = 'sync-pill';
+            return;
+        }
+    }
+
+    el.textContent = '';
+    el.className = '';
+}
+
 async function loadProviders() {
     try {
         const res = await fetch('/api/providers');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        providerCounts = {};
         data.providers.forEach(p => { providerCounts[p.provider_name] = p.count; });
 
         const ordered = data.available.sort((a, b) => (providerCounts[b] || 0) - (providerCounts[a] || 0));
@@ -80,6 +152,7 @@ async function loadProviders() {
 async function loadYears() {
     try {
         const res = await fetch('/api/stats');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const select = document.getElementById('year-filter');
         select.innerHTML = '<option value="">全部年份</option>';
@@ -117,11 +190,11 @@ async function loadTitles() {
         renderTitles(data.titles, state.page === 1);
 
         const typeLabel = state.type === 'movie' ? '部电影' : state.type === 'tv' ? '部电视剧' : '部作品';
-        const loaded = Math.min(state.page * state.limit, data.total);
+        const loaded = Math.min((state.page - 1) * state.limit + data.titles.length, data.total);
         document.getElementById('stats-info').innerHTML =
             `共 <span>${data.total}</span> ${typeLabel}，已加载 <span>${loaded}</span> 部`;
 
-        state.hasMore = (state.page * state.limit) < data.total;
+        state.hasMore = data.titles.length > 0 && loaded < data.total;
         document.getElementById('scroll-sentinel').classList.toggle('hidden', !state.hasMore);
         if (state.page === 1 && data.total === 0 && !hasActiveFilters()) {
             checkBootstrapSync();
@@ -130,12 +203,17 @@ async function loadTitles() {
             loader.classList.add('hidden');
             end.classList.remove('hidden');
         }
-        state.page++;
+        if (data.titles.length > 0) state.page++;
     } catch (e) {
         console.error('titles:', e);
+        state.hasMore = false;
+        document.getElementById('scroll-sentinel').classList.add('hidden');
         if (state.page === 1) {
             renderError();
             document.getElementById('stats-info').textContent = '加载失败，请稍后重试';
+        } else {
+            end.textContent = '加载失败，请刷新重试';
+            end.classList.remove('hidden');
         }
     } finally {
         state.loading = false;
@@ -149,21 +227,23 @@ function hasActiveFilters() {
 
 async function checkBootstrapSync() {
     try {
-        const res = await fetch('/api/sync/status');
-        if (!res.ok) return;
-        const status = await res.json();
+        const status = await loadSyncStatus();
+        if (!status) return;
         const sync = status.sync || {};
         if (!sync.running) return;
 
-        document.getElementById('stats-info').textContent = '首次部署正在抓取 TMDB 数据...';
+        const rebuilding = sync.current_reason === 'untrusted_rating_rebuild';
+        document.getElementById('stats-info').textContent = rebuilding
+            ? '正在按 IMDb 评分重建数据...'
+            : '首次部署正在抓取数据...';
         document.getElementById('titles-grid').innerHTML = `<div class="empty-state">
             <div class="spinner"></div>
-            <p>正在抓取首批作品，稍后会自动刷新</p>
+            <p>${rebuilding ? '正在清理非 IMDb 评分并重新入库' : '正在抓取首批作品，稍后会自动刷新'}</p>
         </div>`;
 
         if (!bootstrapPollTimer) {
             bootstrapPollTimer = setInterval(async () => {
-                const next = await fetch('/api/sync/status').then(r => r.json()).catch(() => null);
+                const next = await loadSyncStatus();
                 if (!next?.sync?.running) {
                     clearInterval(bootstrapPollTimer);
                     bootstrapPollTimer = null;
@@ -198,6 +278,8 @@ function renderTitles(titles, clear) {
         const rating = t.imdb_rating || 0;
         const ratingCls = rating > 0 ? 'card-rating' : 'card-rating no-rating';
         const ratingText = rating > 0 ? rating.toFixed(1) : '—';
+        const sourceText = t.rating_source ? ratingSourceNames[t.rating_source] || 'IMDb' : '';
+        const ratingLabel = sourceText ? `${ratingText} ${sourceText}` : ratingText;
         const poster = t.poster_url || posterFallback;
         const typeLabel = t.type === 'movie' ? '电影' : '电视剧';
         const title = escapeHtml(t.title);
@@ -222,7 +304,7 @@ function renderTitles(titles, clear) {
             <div class="card-info">
                 <div class="card-title">${title}</div>
                 <div class="card-meta">
-                    <span class="${ratingCls}">${ratingText}</span>
+                    <span class="${ratingCls}" title="${escapeHtml(sourceText || '评分来源待更新')}">${escapeHtml(ratingLabel)}</span>
                     <span class="card-date">${releaseDate}</span>
                 </div>
                 <div class="card-overview">${overview}</div>
@@ -269,6 +351,10 @@ async function showDetail(id) {
 function renderDetail(t) {
     const rating = t.imdb_rating || 0;
     const ratingText = rating > 0 ? rating.toFixed(1) : '暂无评分';
+    const sourceText = t.rating_source
+        ? ratingSourceNames[t.rating_source] || 'IMDb'
+        : '评分来源待更新';
+    const votesText = t.rating_votes ? `IMDb ${Number(t.rating_votes).toLocaleString()} 票` : 'IMDb 票数待更新';
     const poster = t.poster_url || posterFallback;
     const typeLabel = t.type === 'movie' ? '电影' : '电视剧';
     const title = escapeHtml(t.title);
@@ -294,6 +380,8 @@ function renderDetail(t) {
             ${originalTitle ? `<p class="original-title">${originalTitle}</p>` : ''}
             <div class="meta-tags">
                 <span class="meta-tag rating-tag">${ratingText}</span>
+                <span class="meta-tag">${sourceText}</span>
+                <span class="meta-tag">${votesText}</span>
                 <span class="meta-tag">${typeLabel}</span>
                 <span class="meta-tag">${releaseDate}</span>
             </div>
@@ -314,7 +402,9 @@ function closeModal() {
 
 function resetAndLoad() {
     state.page = 1; state.hasMore = true;
-    document.getElementById('scroll-end').classList.add('hidden');
+    const end = document.getElementById('scroll-end');
+    end.textContent = '已加载全部作品';
+    end.classList.add('hidden');
     document.getElementById('scroll-sentinel').classList.remove('hidden');
     loadTitles();
     window.scrollTo({ top: 0, behavior: 'smooth' });

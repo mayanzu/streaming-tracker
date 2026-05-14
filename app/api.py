@@ -1,9 +1,73 @@
-from fastapi import APIRouter, Query, HTTPException, Request
-from app.database import get_titles, get_title_detail, get_providers, get_stats
-from app.config import PROVIDERS
+from datetime import date, datetime
+
+from fastapi import APIRouter, Query, HTTPException, Request, Response
+
+from app.database import check_database, get_titles, get_title_detail, get_providers, get_stats
+from app.config import PROVIDERS, TMDB_API_KEY
 from app.scheduler import get_scheduler_status
 
 router = APIRouter()
+
+
+@router.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@router.get("/ready")
+async def ready(request: Request, response: Response):
+    issues = []
+    stats = None
+    latest_sync = None
+    last_update = None
+    try:
+        scheduler = get_scheduler_status(getattr(request.app.state, "scheduler", None))
+    except Exception:
+        scheduler = {"sync": {}}
+
+    if check_database():
+        try:
+            stats = get_stats()
+            latest_sync = stats.get("latest_sync")
+            last_update = stats.get("last_update")
+        except Exception:
+            issues.append("database_unavailable")
+    else:
+        issues.append("database_unavailable")
+
+    if not TMDB_API_KEY:
+        issues.append("missing_tmdb_api_key")
+    if scheduler.get("sync", {}).get("running"):
+        issues.append("sync_running")
+    if latest_sync and latest_sync.get("status") == "failed":
+        issues.append("last_sync_failed")
+    sync_running = scheduler.get("sync", {}).get("running")
+    if stats and stats["total"] == 0 and not sync_running:
+        issues.append("empty_database")
+
+    if last_update:
+        try:
+            age_days = (date.today() - datetime.fromisoformat(last_update).date()).days
+            if age_days > 7:
+                issues.append("stale_data")
+        except ValueError:
+            issues.append("invalid_last_update")
+
+    non_blocking = {"sync_running"}
+    if sync_running:
+        non_blocking.add("empty_database")
+    blocking_issues = [issue for issue in issues if issue not in non_blocking]
+    status = "ready" if not blocking_issues else "degraded"
+    if status != "ready":
+        response.status_code = 503
+
+    return {
+        "status": status,
+        "issues": issues,
+        "total": stats["total"] if stats else 0,
+        "last_update": last_update,
+        "latest_sync": latest_sync,
+    }
 
 
 @router.get("/api/titles")

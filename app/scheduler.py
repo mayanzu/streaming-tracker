@@ -14,10 +14,12 @@ from app.config import (
     SYNC_MAX_PAGES,
     SYNC_MINUTE,
     SYNC_TIMEZONE,
+    SYNC_WINDOW_DAYS,
     SYNC_BOOTSTRAP_ON_EMPTY,
     SYNC_BOOTSTRAP_DAYS_BACK,
     SYNC_BOOTSTRAP_MAX_PAGES,
 )
+from app.database import get_latest_finished_sync_run
 from app.sync import get_sync_state, sync_new_titles
 
 logger = logging.getLogger(__name__)
@@ -42,7 +44,12 @@ def start_scheduler():
     scheduler.add_job(
         sync_new_titles,
         trigger=CronTrigger(hour=SYNC_HOUR, minute=SYNC_MINUTE, timezone=timezone),
-        kwargs={"days_back": SYNC_DAYS_BACK, "max_pages": SYNC_MAX_PAGES, "reason": "scheduled"},
+        kwargs={
+            "days_back": SYNC_DAYS_BACK,
+            "max_pages": SYNC_MAX_PAGES,
+            "window_days": SYNC_WINDOW_DAYS,
+            "reason": "scheduled",
+        },
         id=JOB_ID,
         replace_existing=True,
         max_instances=1,
@@ -69,8 +76,11 @@ def stop_scheduler(scheduler):
 
 
 def get_scheduler_status(scheduler):
-    job = scheduler.get_job(JOB_ID) if scheduler else None
+    job = None
+    if scheduler and scheduler.running:
+        job = scheduler.get_job(JOB_ID)
     next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
+    latest_finished_sync = get_latest_finished_sync_run()
 
     return {
         "enabled": SYNC_ENABLED,
@@ -82,8 +92,10 @@ def get_scheduler_status(scheduler):
         "timezone": SYNC_TIMEZONE,
         "days_back": SYNC_DAYS_BACK,
         "max_pages": SYNC_MAX_PAGES,
+        "window_days": SYNC_WINDOW_DAYS,
         "bootstrap_on_empty": SYNC_BOOTSTRAP_ON_EMPTY,
         "bootstrap_days_back": SYNC_BOOTSTRAP_DAYS_BACK,
         "bootstrap_max_pages": SYNC_BOOTSTRAP_MAX_PAGES,
         "sync": get_sync_state(),
+        "latest_finished_sync": latest_finished_sync,
     }

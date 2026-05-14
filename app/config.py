@@ -36,12 +36,12 @@ PROVIDERS = {
     "apple": 350,
     "hulu": 15,
 }
+WATCH_REGION = os.getenv("WATCH_REGION", "US")
 
 # 评分和抓取策略
 MIN_IMDB_RATING = float(os.getenv("MIN_IMDB_RATING", "7.0"))
 MIN_IMDB_VOTES = int(os.getenv("MIN_IMDB_VOTES", "50"))
 OMDB_MIN_VOTES = int(os.getenv("OMDB_MIN_VOTES", "100"))
-TMDB_FALLBACK_MIN_VOTES = int(os.getenv("TMDB_FALLBACK_MIN_VOTES", "5"))
 ENRICH_CONCURRENCY = int(os.getenv("ENRICH_CONCURRENCY", "30"))
 
 # 本地同步上传目标。示例：root@192.168.1.2:/app/data/tracker.db
@@ -54,6 +54,7 @@ SYNC_MINUTE = int(os.getenv("SYNC_MINUTE", "0"))
 SYNC_TIMEZONE = os.getenv("SYNC_TIMEZONE", "Asia/Shanghai")
 SYNC_DAYS_BACK = int(os.getenv("SYNC_DAYS_BACK", "30"))
 SYNC_MAX_PAGES = int(os.getenv("SYNC_MAX_PAGES", "5"))
+SYNC_WINDOW_DAYS = int(os.getenv("SYNC_WINDOW_DAYS", "90"))
 SYNC_BOOTSTRAP_ON_EMPTY = os.getenv("SYNC_BOOTSTRAP_ON_EMPTY", "true").lower() in (
     "1",
     "true",

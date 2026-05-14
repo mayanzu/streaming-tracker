@@ -25,6 +25,10 @@ def clean_db():
     no_rating = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM titles WHERE imdb_rating < ?", (MIN_IMDB_RATING,))
     low_rating = cursor.fetchone()[0]
+    cursor.execute(
+        "SELECT COUNT(*) FROM titles WHERE rating_source IS NULL OR rating_source NOT IN ('imdb', 'omdb')"
+    )
+    untrusted = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM titles WHERE release_date < ?", (cutoff,))
     old = cursor.fetchone()[0]
 
@@ -33,6 +37,8 @@ def clean_db():
         DELETE FROM titles WHERE
             imdb_rating IS NULL
             OR imdb_rating < ?
+            OR rating_source IS NULL
+            OR rating_source NOT IN ('imdb', 'omdb')
             OR release_date < ?
     """, (MIN_IMDB_RATING, cutoff))
 
@@ -48,7 +54,7 @@ def clean_db():
 
     print(f"清理完成：")
     print(f"  清理前: {before} 部")
-    print(f"  无IMDb: {no_rating}  低分: {low_rating}  过期: {old}")
+    print(f"  无IMDb: {no_rating}  低分: {low_rating}  非IMDb来源: {untrusted}  过期: {old}")
     print(f"  删除: {before - after} 部")
     print(f"  保留: {after} 部")
 

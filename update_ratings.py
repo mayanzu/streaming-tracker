@@ -1,6 +1,7 @@
 """离线批量更新 IMDb 评分 + 插入数据库缺失的新片（调用 TMDB API 补全信息）"""
 import asyncio
 import json
+from datetime import datetime, timezone
 
 import httpx
 
@@ -9,6 +10,10 @@ from app.database import get_db_connection, insert_title
 from app.imdb_data import load_ratings
 
 CONCUR = 30
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def build_tmdb_to_imdb():
@@ -84,10 +89,14 @@ async def insert_missing_titles(tmdb_to_imdb, ratings):
             new_mappings[str(tmdb_id)] = imdb_id
 
         rating = None
+        votes = None
         if imdb_id and imdb_id in ratings:
             r, v = ratings[imdb_id]
             if v >= MIN_IMDB_VOTES and r >= MIN_IMDB_RATING:
                 rating = r
+                votes = v
+        if rating is None:
+            continue
 
         title_data = {
             'tmdb_id': tmdb_id,
@@ -98,6 +107,8 @@ async def insert_missing_titles(tmdb_to_imdb, ratings):
             'release_date': detail.get('release_date') or detail.get('first_air_date', ''),
             'poster_url': f"https://image.tmdb.org/t/p/w500{detail['poster_path']}" if detail.get('poster_path') else None,
             'imdb_rating': rating,
+            'rating_source': 'imdb' if rating is not None else None,
+            'rating_votes': votes,
             'added_date': '',
             'providers': [],
         }
@@ -133,23 +144,35 @@ def update_ratings():
     total = len(titles)
 
     imdb_ok = cleared = no_map = 0
+    now = utc_now()
 
     for i, row in enumerate(titles, 1):
         title_id, tmdb_id, _ = row['id'], row['tmdb_id'], row['type']
         imdb_id = tmdb_to_imdb.get(str(tmdb_id)) or new_mappings.get(str(tmdb_id))
 
         new_rating = None
+        new_source = None
+        new_votes = None
         if imdb_id:
             r, v = ratings.get(imdb_id, (None, 0))
             if r is not None and v >= MIN_IMDB_VOTES and r >= MIN_IMDB_RATING:
                 new_rating = r
+                new_source = 'imdb'
+                new_votes = v
                 imdb_ok += 1
             else:
                 cleared += 1
         else:
             no_map += 1
 
-        cursor.execute("UPDATE titles SET imdb_rating = ? WHERE id = ?", (new_rating, title_id))
+        cursor.execute(
+            """
+            UPDATE titles
+            SET imdb_rating = ?, rating_source = ?, rating_votes = ?, last_synced_at = ?
+            WHERE id = ?
+            """,
+            (new_rating, new_source, new_votes, now, title_id),
+        )
 
         if i % 500 == 0:
             conn.commit()

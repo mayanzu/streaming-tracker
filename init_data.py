@@ -15,7 +15,9 @@ async def main():
 
     print("全平台抓取中...\n")
     init_db()
-    titles = await fetch_all_providers()
+    fetch_result = await fetch_all_providers()
+    titles = fetch_result["titles"]
+    stats = fetch_result["stats"]
 
     print("\n写入数据库...")
     for t in titles:
@@ -24,7 +26,10 @@ async def main():
         except Exception as e:
             print(f"  跳过 {t['title']}: {e}")
 
-    print(f"\n完成！共 {len(titles)} 部 IMDb>={MIN_IMDB_RATING} 作品入库")
+    print(
+        f"\n完成！发现 {stats.get('discovered', 0)} 部，"
+        f"入库 {len(titles)} 部 IMDb>={MIN_IMDB_RATING} 作品"
+    )
 
 
 if __name__ == "__main__":

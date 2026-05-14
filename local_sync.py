@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import subprocess
+from datetime import datetime, timezone
 
 from app.config import (
     DATA_DIR,
@@ -11,6 +12,7 @@ from app.config import (
     MIN_IMDB_RATING,
     MIN_IMDB_VOTES,
     ROUTER_TARGET,
+    SYNC_WINDOW_DAYS,
 )
 from app.database import get_db_connection
 from app.imdb_data import load_ratings
@@ -37,14 +39,19 @@ def refresh_existing_ratings(force_dataset_download=False):
     rows = cursor.fetchall()
 
     imdb_ok = cleared = no_map = 0
+    now = datetime.now(timezone.utc).isoformat()
     for row in rows:
         imdb_id = tmdb_to_imdb.get(str(row["tmdb_id"]))
         new_rating = None
+        new_source = None
+        new_votes = None
 
         if imdb_id:
             rating, votes = ratings.get(imdb_id, (None, 0))
             if rating is not None and votes >= MIN_IMDB_VOTES and rating >= MIN_IMDB_RATING:
                 new_rating = rating
+                new_source = "imdb"
+                new_votes = votes
                 imdb_ok += 1
             else:
                 cleared += 1
@@ -52,8 +59,12 @@ def refresh_existing_ratings(force_dataset_download=False):
             no_map += 1
 
         cursor.execute(
-            "UPDATE titles SET imdb_rating = ? WHERE id = ?",
-            (new_rating, row["id"]),
+            """
+            UPDATE titles
+            SET imdb_rating = ?, rating_source = ?, rating_votes = ?, last_synced_at = ?
+            WHERE id = ?
+            """,
+            (new_rating, new_source, new_votes, now, row["id"]),
         )
 
     conn.commit()
@@ -83,6 +94,12 @@ async def main():
     parser = argparse.ArgumentParser(description="streaming-tracker 本地同步脚本")
     parser.add_argument("--days-back", type=int, default=30, help="抓取最近 N 天内容")
     parser.add_argument("--max-pages", type=int, default=5, help="每类内容最多抓取页数")
+    parser.add_argument(
+        "--window-days",
+        type=int,
+        default=SYNC_WINDOW_DAYS,
+        help="把抓取时间范围拆成 N 天一个窗口，避免长时间范围被 TMDB 分页截断",
+    )
     parser.add_argument("--skip-fetch", action="store_true", help="跳过新片抓取")
     parser.add_argument("--skip-upload", action="store_true", help="跳过数据库上传")
     parser.add_argument("--refresh-ratings", action="store_true", help="刷新已有标题评分")
@@ -97,8 +114,15 @@ async def main():
         refresh_existing_ratings(force_dataset_download=args.init_ratings)
 
     if not args.skip_fetch:
-        result = await sync_new_titles(days_back=args.days_back, max_pages=args.max_pages)
-        print(f"同步完成：写入/更新 {result['processed']} 部，跳过 {result['skipped']} 部")
+        result = await sync_new_titles(
+            days_back=args.days_back,
+            max_pages=args.max_pages,
+            window_days=args.window_days,
+        )
+        print(
+            f"同步完成：发现 {result.get('discovered', 0)} 部，"
+            f"入库/更新 {result['processed']} 部，跳过 {result['skipped']} 部"
+        )
 
     if not args.skip_upload:
         upload_database()
