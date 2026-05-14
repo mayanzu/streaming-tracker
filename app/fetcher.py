@@ -1,35 +1,66 @@
-import httpx
 import asyncio
-import re
-import json as _json
+import logging
 from datetime import datetime, timedelta
-from deep_translator import GoogleTranslator
-from app.config import TMDB_API_KEY, TMDB_BASE_URL, PROVIDERS, OMDB_API_KEY, OMDB_BASE_URL
 
-MIN_IMDB_VOTES = 100
-MIN_IMDB_RATING = 7.0
-ENRICH_CONCURRENCY = 30
+import httpx
+from deep_translator import GoogleTranslator
+
+from app.config import (
+    ENRICH_CONCURRENCY,
+    MIN_IMDB_RATING,
+    MIN_IMDB_VOTES,
+    OMDB_API_KEY,
+    OMDB_BASE_URL,
+    OMDB_MIN_VOTES,
+    PROVIDERS,
+    TMDB_API_KEY,
+    TMDB_BASE_URL,
+    TMDB_FALLBACK_MIN_VOTES,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _localized_poster_path(details):
+    posters = details.get("images", {}).get("posters", [])
+    if not posters:
+        return details.get("poster_path")
+
+    for language in ("zh", "zh-CN", "zh-TW", "zh-HK", None, "en"):
+        for poster in posters:
+            if poster.get("iso_639_1") == language and poster.get("file_path"):
+                return poster["file_path"]
+
+    return details.get("poster_path") or posters[0].get("file_path")
+
+
+def _poster_url(path):
+    return f"https://image.tmdb.org/t/p/w500{path}" if path else None
 
 
 async def translate_to_chinese(text):
+    if not text:
+        return text
+
     try:
         result = await asyncio.to_thread(
-            GoogleTranslator(source='en', target='zh-CN').translate, text[:800]
+            GoogleTranslator(source="en", target="zh-CN").translate, text[:800]
         )
         return result if result else text
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to translate overview: %s", exc)
         return text
 
 
 async def fetch_tmdb(endpoint, params=None, retries=2):
-    if params is None:
-        params = {}
-    params['api_key'] = TMDB_API_KEY
-    params.setdefault('language', 'zh-CN')
+    request_params = dict(params or {})
+    request_params["api_key"] = TMDB_API_KEY
+    request_params.setdefault("language", "zh-CN")
+
     for attempt in range(retries + 1):
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.get(f"{TMDB_BASE_URL}{endpoint}", params=params)
+                response = await client.get(f"{TMDB_BASE_URL}{endpoint}", params=request_params)
                 response.raise_for_status()
                 return response.json()
         except Exception:
@@ -38,209 +69,185 @@ async def fetch_tmdb(endpoint, params=None, retries=2):
             await asyncio.sleep(1)
 
 
-IMDB_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
-
-
 async def fetch_omdb(imdb_id):
-    """返回 (rating, votes) 或 (None, 0)=无数据 或 (None, -1)=限流"""
+    """返回 (rating, votes)，无数据返回 (None, 0)。"""
+    if not OMDB_API_KEY:
+        return None, 0
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(
                 OMDB_BASE_URL, params={"i": imdb_id, "apikey": OMDB_API_KEY}
             )
             data = response.json()
-            if data.get('Response') == 'True':
-                r = data.get('imdbRating')
-                v = data.get('imdbVotes', '0')
-                if r not in (None, 'N/A'):
-                    return float(r), int(v.replace(',', ''))
-            elif 'limit' in data.get('Error', '').lower():
-                return None, -1  # 限流，保留现有评分
-    except Exception:
-        pass
+            if data.get("Response") == "True":
+                rating = data.get("imdbRating")
+                votes = data.get("imdbVotes", "0")
+                if rating not in (None, "N/A"):
+                    return float(rating), int(votes.replace(",", ""))
+    except Exception as exc:
+        logger.warning("Failed to fetch OMDB rating for %s: %s", imdb_id, exc)
+
     return None, 0
-
-
-async def scrape_imdb(imdb_id):
-    """OMDB失败时的备选：直接从IMDb页面JSON-LD抓取评分"""
-    try:
-        async with httpx.AsyncClient(headers=IMDB_HEADERS, follow_redirects=True, timeout=15) as client:
-            response = await client.get(f"https://www.imdb.com/title/{imdb_id}/")
-            if response.status_code != 200:
-                return None, 0
-            match = re.search(
-                r'<script type="application/ld\+json">(.*?)</script>',
-                response.text, re.DOTALL
-            )
-            if match:
-                data = _json.loads(match.group(1))
-                agg = data.get('aggregateRating', {})
-                rating = agg.get('ratingValue')
-                count = agg.get('ratingCount', 0)
-                if rating:
-                    return float(rating), int(count)
-    except Exception:
-        pass
-    return None, 0
-
-
-# 模块级缓存：启动时检测各方法是否可用
-_omdb_ok = None
-_scrape_ok = None
-_check_lock = asyncio.Lock()
-
-
-async def _check_omdb():
-    global _omdb_ok
-    async with _check_lock:
-        if _omdb_ok is None:
-            r, v = await fetch_omdb('tt3896198')
-            _omdb_ok = (r is not None)
-            print(f"  OMDB check: {'OK' if _omdb_ok else 'UNAVAILABLE (rate limit)'}", flush=True)
-    return _omdb_ok
-
-
-async def _check_scrape():
-    global _scrape_ok
-    async with _check_lock:
-        if _scrape_ok is None:
-            r, v = await scrape_imdb('tt3896198')
-            _scrape_ok = (r is not None)
-            print(f"  IMDb scrape check: {'OK' if _scrape_ok else 'UNAVAILABLE (blocked)'}", flush=True)
-    return _scrape_ok
 
 
 async def get_trusted_rating(imdb_id, tmdb_vote_avg, tmdb_vote_count):
-    """IMDb 数据集 → OMDB → TMDB 三级"""
-    # 1. IMDb 官方数据集（本地，秒级）
+    """IMDb 数据集 -> OMDB -> TMDB 三级评分来源。"""
     if imdb_id:
         from app.imdb_data import get_rating
-        rating, votes = get_rating(imdb_id)
-        if rating is not None and votes >= 50:
-            return rating, votes, 'imdb'
 
-    # 2. OMDB（增量新片，数据集未收录时）
+        rating, votes = get_rating(imdb_id)
+        if rating is not None and votes >= MIN_IMDB_VOTES:
+            return rating, votes, "imdb"
+
     if imdb_id:
         rating, votes = await fetch_omdb(imdb_id)
-        if rating is not None and votes >= 100:
-            return rating, votes, 'imdb'
+        if rating is not None and votes >= OMDB_MIN_VOTES:
+            return rating, votes, "omdb"
 
-    # 3. TMDB 兜底
-    if tmdb_vote_count >= 5 and tmdb_vote_avg > 0:
-        return tmdb_vote_avg, tmdb_vote_count, 'tmdb'
+    if tmdb_vote_count >= TMDB_FALLBACK_MIN_VOTES and tmdb_vote_avg > 0:
+        return tmdb_vote_avg, tmdb_vote_count, "tmdb"
 
     return None, 0, None
 
 
-async def fetch_new_releases(provider_name, days_back=1825):
-    """获取平台新片（不按评分过滤，全量拿海报+基本信息）"""
+async def fetch_new_releases(provider_name, days_back=1825, max_pages=29):
+    """获取平台新片，不在 discover 阶段按评分过滤。"""
     if provider_name not in PROVIDERS:
         raise ValueError(f"Unknown provider: {provider_name}")
+    if not TMDB_API_KEY:
+        raise ValueError("TMDB_API_KEY is required")
 
     provider_id = PROVIDERS[provider_name]
     cutoff_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    added_date = datetime.now().strftime("%Y-%m-%d")
     results = []
 
     for media_type, date_field, sort_field in [
         ("movie", "primary_release_date", "primary_release_date.desc"),
         ("tv", "first_air_date", "first_air_date.desc"),
     ]:
-        for page in range(1, 30):
-            data = await fetch_tmdb(f"/discover/{media_type}", {
-                "watch_region": "US",
-                "with_watch_providers": provider_id,
-                "watch_monetization_types": "flatrate",
-                "sort_by": sort_field,
-                date_field + ".gte": cutoff_date,
-                "page": page,
-            })
-            page_results = data.get('results', [])
+        for page in range(1, max_pages + 1):
+            data = await fetch_tmdb(
+                f"/discover/{media_type}",
+                {
+                    "watch_region": "US",
+                    "with_watch_providers": provider_id,
+                    "watch_monetization_types": "flatrate",
+                    "sort_by": sort_field,
+                    f"{date_field}.gte": cutoff_date,
+                    "page": page,
+                },
+            )
+            page_results = data.get("results", [])
             if not page_results:
                 break
 
             for item in page_results:
-                if not item.get('poster_path'):
+                if not item.get("poster_path"):
                     continue
-                poster = f"https://image.tmdb.org/t/p/w500{item['poster_path']}"
-                results.append({
-                    'tmdb_id': item['id'],
-                    'title': item.get('title') or item.get('name', ''),
-                    'original_title': item.get('original_title') or item.get('original_name', ''),
-                    'type': media_type,
-                    'overview': item.get('overview', ''),
-                    'release_date': item.get('release_date') or item.get('first_air_date', ''),
-                    'poster_url': poster,
-                    'imdb_rating': None,
-                    'added_date': datetime.now().strftime("%Y-%m-%d"),
-                    'providers': [provider_name],
-                })
+
+                poster_path = item.get("poster_path")
+                results.append(
+                    {
+                        "tmdb_id": item["id"],
+                        "title": item.get("title") or item.get("name", ""),
+                        "original_title": item.get("original_title")
+                        or item.get("original_name", ""),
+                        "type": media_type,
+                        "overview": item.get("overview", ""),
+                        "release_date": item.get("release_date")
+                        or item.get("first_air_date", ""),
+                        "poster_url": _poster_url(poster_path),
+                        "imdb_rating": None,
+                        "added_date": added_date,
+                        "providers": [provider_name],
+                    }
+                )
 
     return results
 
 
 async def enrich_with_imdb(title_data):
-    """填充 IMDb 评分（三级策略：OMDB → IMDb抓取 → TMDB大样本兜底）"""
+    """填充评分和中文简介兜底。"""
     try:
         endpoint = f"/{'movie' if title_data['type'] == 'movie' else 'tv'}/{title_data['tmdb_id']}"
-        details = await fetch_tmdb(endpoint, {"append_to_response": "external_ids"})
+        details = await fetch_tmdb(
+            endpoint,
+            {
+                "append_to_response": "external_ids,images",
+                "include_image_language": "zh,null,en",
+            },
+        )
 
-        # 英文简介兜底
-        if not title_data.get('overview') and not details.get('overview'):
+        localized_poster = _localized_poster_path(details)
+        if localized_poster:
+            title_data["poster_url"] = _poster_url(localized_poster)
+
+        if not title_data.get("overview") and not details.get("overview"):
             en = await fetch_tmdb(endpoint, {"language": "en-US"})
-            if en.get('overview'):
-                title_data['overview'] = await translate_to_chinese(en['overview'])
+            if en.get("overview"):
+                title_data["overview"] = await translate_to_chinese(en["overview"])
 
-        # 三级评分策略
-        imdb_id = details.get('external_ids', {}).get('imdb_id')
-        rating, votes, source = await get_trusted_rating(
+        imdb_id = details.get("external_ids", {}).get("imdb_id")
+        rating, _votes, _source = await get_trusted_rating(
             imdb_id,
-            details.get('vote_average', 0),
-            details.get('vote_count', 0)
+            details.get("vote_average", 0),
+            details.get("vote_count", 0),
         )
         if rating is not None:
-            title_data['imdb_rating'] = rating
-    except Exception as e:
-        print(f"  enrich error: {title_data.get('title','?')}: {e}")
+            title_data["imdb_rating"] = rating
+    except Exception:
+        logger.exception("Failed to enrich title %s", title_data.get("title", "?"))
 
     return title_data
 
 
-async def fetch_all_providers():
-    """全平台抓取 → IMDb评分 → 只留 >=7.0"""
+async def fetch_all_providers(days_back=1825, max_pages=29):
+    """全平台抓取 -> 评分补全 -> 只返回达标作品。"""
     sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
     all_titles = []
 
     for provider_name in PROVIDERS:
-        print(f"\n{'='*50}", flush=True)
+        print(f"\n{'=' * 50}", flush=True)
         print(f"  {provider_name}", flush=True)
-        print(f"{'='*50}", flush=True)
+        print(f"{'=' * 50}", flush=True)
 
         try:
-            titles = await fetch_new_releases(provider_name)
+            titles = await fetch_new_releases(
+                provider_name, days_back=days_back, max_pages=max_pages
+            )
             print(f"  TMDB discover: {len(titles)} 部", flush=True)
 
-            # 并发 enrich
-            async def enrich_one(t):
+            async def enrich_one(title):
                 async with sem:
-                    return await enrich_with_imdb(t)
+                    return await enrich_with_imdb(title)
 
-            await asyncio.gather(*[enrich_one(t) for t in titles])
-
-            # IMDb >= 7.0 过滤
-            qualified = [t for t in titles if t['imdb_rating'] is not None and t['imdb_rating'] >= MIN_IMDB_RATING]
-            no_rating = sum(1 for t in titles if t['imdb_rating'] is None)
-            low_rating = len(titles) - len(qualified) - no_rating
-            print(f"  IMDb>=7.0: {len(qualified)}  无可靠评分: {no_rating}  低分过滤: {low_rating}", flush=True)
+            enriched_titles = await asyncio.gather(*(enrich_one(title) for title in titles))
+            qualified = [
+                title
+                for title in enriched_titles
+                if title["imdb_rating"] is not None
+                and title["imdb_rating"] >= MIN_IMDB_RATING
+            ]
+            no_rating = sum(1 for title in enriched_titles if title["imdb_rating"] is None)
+            low_rating = len(enriched_titles) - len(qualified) - no_rating
+            print(
+                f"  IMDb>={MIN_IMDB_RATING}: {len(qualified)}  "
+                f"无可靠评分: {no_rating}  低分过滤: {low_rating}",
+                flush=True,
+            )
 
             all_titles.extend(qualified)
 
-        except Exception as e:
-            print(f"  Error: {e}", flush=True)
+        except Exception as exc:
+            print(f"  Error: {exc}", flush=True)
 
-    print(f"\n{'='*50}", flush=True)
-    print(f"  总计入库: {len(all_titles)} 部 (IMDb>={MIN_IMDB_RATING}, >= {MIN_IMDB_VOTES}票)", flush=True)
-    print(f"{'='*50}", flush=True)
+    print(f"\n{'=' * 50}", flush=True)
+    print(
+        f"  总计入库: {len(all_titles)} 部 "
+        f"(IMDb>={MIN_IMDB_RATING}, >= {MIN_IMDB_VOTES}票)",
+        flush=True,
+    )
+    print(f"{'=' * 50}", flush=True)
     return all_titles

@@ -8,3 +8,13 @@ data/
 *.md
 venv/
 .venv/
+.claude/
+*.tar
+*.db
+*.sqlite
+*.sqlite3
+*.tsv
+*.tsv.gz
+ssh_out.txt
+ssh_err.txt
+daemon*.json

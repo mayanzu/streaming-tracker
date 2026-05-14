@@ -15,6 +15,22 @@ const providerNames = {
 };
 
 let providerCounts = {};
+const posterFallback = `data:image/svg+xml,${encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750">
+  <rect width="500" height="750" fill="#18181e"/>
+  <rect x="1" y="1" width="498" height="748" rx="16" fill="none" stroke="#2a2a34" stroke-width="2"/>
+  <circle cx="250" cy="315" r="42" fill="#2a2a34"/>
+  <path d="M192 414h116M214 456h72" stroke="#6e6e7a" stroke-width="16" stroke-linecap="round"/>
+  <text x="250" y="535" text-anchor="middle" fill="#6e6e7a" font-family="Arial, sans-serif" font-size="28" font-weight="700">NO POSTER</text>
+</svg>
+`)}`;
+window.posterFallback = posterFallback;
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
     await loadProviders();
@@ -31,7 +47,7 @@ async function loadProviders() {
         data.providers.forEach(p => { providerCounts[p.provider_name] = p.count; });
 
         const ordered = data.available.sort((a, b) => (providerCounts[b] || 0) - (providerCounts[a] || 0));
-        const total = Object.values(providerCounts).reduce((s, c) => s + c, 0);
+        const total = data.total ?? Object.values(providerCounts).reduce((s, c) => s + c, 0);
 
         const container = document.getElementById('provider-filters');
         container.innerHTML = `<button class="filter-btn active" data-provider="">
@@ -78,7 +94,7 @@ async function loadTitles() {
 
     const loader = document.getElementById('scroll-loader');
     const end = document.getElementById('scroll-end');
-    loader.classList.remove('hidden');
+    if (state.page > 1) loader.classList.remove('hidden');
     end.classList.add('hidden');
 
     try {
@@ -93,15 +109,18 @@ async function loadTitles() {
         if (state.rating > 0) params.append('min_rating', state.rating);
 
         const res = await fetch(`/api/titles?${params}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
         renderTitles(data.titles, state.page === 1);
 
         const typeLabel = state.type === 'movie' ? '部电影' : state.type === 'tv' ? '部电视剧' : '部作品';
+        const loaded = Math.min(state.page * state.limit, data.total);
         document.getElementById('stats-info').innerHTML =
-            `共 <span>${data.total}</span> ${typeLabel}，已加载 <span>${Math.min(state.page * state.limit, data.total)}</span> 部`;
+            `共 <span>${data.total}</span> ${typeLabel}，已加载 <span>${loaded}</span> 部`;
 
         state.hasMore = (state.page * state.limit) < data.total;
+        document.getElementById('scroll-sentinel').classList.toggle('hidden', !state.hasMore);
         if (!state.hasMore && data.total > 0) {
             loader.classList.add('hidden');
             end.classList.remove('hidden');
@@ -109,6 +128,10 @@ async function loadTitles() {
         state.page++;
     } catch (e) {
         console.error('titles:', e);
+        if (state.page === 1) {
+            renderError();
+            document.getElementById('stats-info').textContent = '加载失败，请稍后重试';
+        }
     } finally {
         state.loading = false;
         loader.classList.add('hidden');
@@ -137,37 +160,55 @@ function renderTitles(titles, clear) {
         const rating = t.imdb_rating || 0;
         const ratingCls = rating > 0 ? 'card-rating' : 'card-rating no-rating';
         const ratingText = rating > 0 ? rating.toFixed(1) : '—';
-        const poster = t.poster_url || 'https://placehold.co/500x750/1a1a1e/5c5c66?text=No+Poster';
+        const poster = t.poster_url || posterFallback;
         const typeLabel = t.type === 'movie' ? '电影' : '电视剧';
-        const releaseDate = t.release_date || '';
+        const title = escapeHtml(t.title);
+        const overview = escapeHtml(t.overview || '');
+        const releaseDate = escapeHtml(t.release_date || '');
 
         const providersHtml = (t.providers || []).map(p => {
             const color = providerColors[p] || '#666';
             return `<span class="card-provider">
-                <span class="p-dot" style="background:${color}"></span>${providerNames[p] || p}</span>`;
+                <span class="p-dot" style="background:${color}"></span>${escapeHtml(providerNames[p] || p)}</span>`;
         }).join('');
 
+        card.tabIndex = 0;
+        card.setAttribute('role', 'button');
+        card.setAttribute('aria-label', `查看 ${t.title || ''} 详情`);
         card.innerHTML = `
             <div class="poster-wrap">
-                <img src="${poster}" alt="${t.title}" loading="lazy"
-                     onerror="this.src='https://placehold.co/500x750/1a1a1e/5c5c66?text=No+Poster'">
+                <img src="${escapeHtml(poster)}" alt="${title}" loading="lazy"
+                     onerror="this.src=window.posterFallback">
                 <span class="type-tag">${typeLabel}</span>
             </div>
             <div class="card-info">
-                <div class="card-title">${t.title}</div>
+                <div class="card-title">${title}</div>
                 <div class="card-meta">
                     <span class="${ratingCls}">${ratingText}</span>
                     <span class="card-date">${releaseDate}</span>
                 </div>
-                <div class="card-overview">${t.overview || ''}</div>
+                <div class="card-overview">${overview}</div>
                 <div class="card-providers">${providersHtml}</div>
             </div>`;
 
         card.addEventListener('click', () => showDetail(t.id));
+        card.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                showDetail(t.id);
+            }
+        });
         frag.appendChild(card);
     });
 
     grid.appendChild(frag);
+}
+
+function renderError() {
+    document.getElementById('titles-grid').innerHTML = `<div class="empty-state">
+        <div class="empty-icon">!</div>
+        <p>数据加载失败，请刷新页面重试</p>
+    </div>`;
 }
 
 async function showDetail(id) {
@@ -190,32 +231,38 @@ async function showDetail(id) {
 function renderDetail(t) {
     const rating = t.imdb_rating || 0;
     const ratingText = rating > 0 ? rating.toFixed(1) : '暂无评分';
-    const poster = t.poster_url || 'https://placehold.co/500x750/1a1a1e/5c5c66?text=No+Poster';
+    const poster = t.poster_url || posterFallback;
     const typeLabel = t.type === 'movie' ? '电影' : '电视剧';
+    const title = escapeHtml(t.title);
+    const originalTitle = escapeHtml(t.original_title || '');
+    const releaseDate = escapeHtml(t.release_date || '—');
+    const overview = escapeHtml(t.overview || '暂无简介');
+    const tmdbType = t.type === 'movie' ? 'movie' : 'tv';
+    const tmdbId = encodeURIComponent(t.tmdb_id);
 
     const providersHtml = (t.providers || []).map(p => {
         const color = providerColors[p] || '#666';
         return `<span class="modal-provider">
-            <span class="p-dot" style="background:${color}"></span>${providerNames[p] || p}</span>`;
+            <span class="p-dot" style="background:${color}"></span>${escapeHtml(providerNames[p] || p)}</span>`;
     }).join('');
 
     document.getElementById('detail-content').innerHTML = `
         <div class="modal-poster">
-            <img src="${poster}" alt="${t.title}"
-                 onerror="this.src='https://placehold.co/500x750/1a1a1e/5c5c66?text=No+Poster'">
+            <img src="${escapeHtml(poster)}" alt="${title}"
+                 onerror="this.src=window.posterFallback">
         </div>
         <div class="modal-info">
-            <h2>${t.title}</h2>
-            ${t.original_title ? `<p class="original-title">${t.original_title}</p>` : ''}
+            <h2>${title}</h2>
+            ${originalTitle ? `<p class="original-title">${originalTitle}</p>` : ''}
             <div class="meta-tags">
                 <span class="meta-tag rating-tag">${ratingText}</span>
                 <span class="meta-tag">${typeLabel}</span>
-                <span class="meta-tag">${t.release_date || '—'}</span>
+                <span class="meta-tag">${releaseDate}</span>
             </div>
             <div class="modal-providers">${providersHtml}</div>
             <h3>剧情简介</h3>
-            <p class="modal-overview">${t.overview || '暂无简介'}</p>
-            <a href="https://www.themoviedb.org/${t.type}/${t.tmdb_id}" target="_blank" class="modal-link">
+            <p class="modal-overview">${overview}</p>
+            <a href="https://www.themoviedb.org/${tmdbType}/${tmdbId}" target="_blank" rel="noopener noreferrer" class="modal-link">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                 在 TMDB 查看
             </a>
@@ -230,6 +277,7 @@ function closeModal() {
 function resetAndLoad() {
     state.page = 1; state.hasMore = true;
     document.getElementById('scroll-end').classList.add('hidden');
+    document.getElementById('scroll-sentinel').classList.remove('hidden');
     loadTitles();
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -288,5 +336,5 @@ function setupEvents() {
 function setupInfiniteScroll() {
     new IntersectionObserver(entries => {
         if (entries[0].isIntersecting && state.hasMore && !state.loading) loadTitles();
-    }, { threshold: 0 }).observe(document.getElementById('scroll-loader'));
+    }, { threshold: 0, rootMargin: '600px 0px' }).observe(document.getElementById('scroll-sentinel'));
 }

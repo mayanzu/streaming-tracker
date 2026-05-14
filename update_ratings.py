@@ -1,21 +1,20 @@
 """离线批量更新 IMDb 评分 + 插入数据库缺失的新片（调用 TMDB API 补全信息）"""
-import json, os, sys, asyncio, httpx
-sys.path.insert(0, '.')
+import asyncio
+import json
+
+import httpx
+
+from app.config import DATA_DIR, MIN_IMDB_RATING, MIN_IMDB_VOTES, TMDB_API_KEY, TMDB_BASE_URL
 from app.database import get_db_connection, insert_title
 from app.imdb_data import load_ratings
-from app.config import TMDB_API_KEY, TMDB_BASE_URL
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
-DATA_DIR = os.path.abspath(DATA_DIR)
-MIN_VOTES = 50
-MIN_RATING = 7.0
 CONCUR = 30
 
 
 def build_tmdb_to_imdb():
     """从 tmdb_imdb_map.json 加载已有映射"""
-    path = os.path.join(DATA_DIR, 'tmdb_imdb_map.json')
-    if os.path.exists(path):
+    path = DATA_DIR / 'tmdb_imdb_map.json'
+    if path.exists():
         with open(path, 'r', encoding='utf-8') as f:
             mapping = json.load(f)
         print(f'  Loaded {len(mapping):,} TMDB→IMDb mappings from map file')
@@ -33,7 +32,7 @@ async def fetch_tmdb_detail(client, tmdb_id, media_type, semaphore):
             )
             if r.status_code == 200:
                 return r.json()
-        except:
+        except Exception:
             pass
         return None
 
@@ -47,15 +46,15 @@ async def insert_missing_titles(tmdb_to_imdb, ratings):
 
     all_new_ids = []
     for kind in ['movie_ids', 'tv_series_ids']:
-        path = os.path.join(DATA_DIR, f'{kind}.json')
-        if not os.path.exists(path):
+        path = DATA_DIR / f'{kind}.json'
+        if not path.exists():
             continue
         media_type = 'movie' if kind == 'movie_ids' else 'tv'
         with open(path, 'r', encoding='utf-8') as f:
             for line in f:
                 try:
                     item = json.loads(line.strip())
-                except:
+                except Exception:
                     continue
                 tmdb_id = item.get('id')
                 if tmdb_id not in existing:
@@ -87,7 +86,7 @@ async def insert_missing_titles(tmdb_to_imdb, ratings):
         rating = None
         if imdb_id and imdb_id in ratings:
             r, v = ratings[imdb_id]
-            if v >= MIN_VOTES and r >= MIN_RATING:
+            if v >= MIN_IMDB_VOTES and r >= MIN_IMDB_RATING:
                 rating = r
 
         title_data = {
@@ -113,6 +112,10 @@ async def insert_missing_titles(tmdb_to_imdb, ratings):
 
 
 def update_ratings():
+    if not TMDB_API_KEY:
+        print('请先配置 TMDB_API_KEY')
+        return
+
     print('Step 1: Load IMDb ratings...')
     ratings = load_ratings()
 
@@ -138,7 +141,7 @@ def update_ratings():
         new_rating = None
         if imdb_id:
             r, v = ratings.get(imdb_id, (None, 0))
-            if r is not None and v >= MIN_VOTES and r >= MIN_RATING:
+            if r is not None and v >= MIN_IMDB_VOTES and r >= MIN_IMDB_RATING:
                 new_rating = r
                 imdb_ok += 1
             else:
@@ -159,7 +162,7 @@ def update_ratings():
 
     if new_mappings:
         print('\nStep 5: Saving new IMDB mappings...')
-        map_path = os.path.join(DATA_DIR, 'tmdb_imdb_map.json')
+        map_path = DATA_DIR / 'tmdb_imdb_map.json'
         all_mappings = dict(tmdb_to_imdb)
         all_mappings.update(new_mappings)
         with open(map_path, 'w', encoding='utf-8') as f:

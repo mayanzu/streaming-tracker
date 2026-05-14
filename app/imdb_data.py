@@ -1,37 +1,39 @@
 """IMDb 官方数据集加载 —— 免 API Key、无限流、全量"""
 
 import gzip
-import os
 import urllib.request
 from datetime import datetime, timedelta
+from pathlib import Path
+
+from app.config import DATA_DIR
 
 DATASET_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz"
-CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-CACHE_FILE = os.path.join(CACHE_DIR, "title.ratings.tsv")
+CACHE_DIR = DATA_DIR
+CACHE_FILE = CACHE_DIR / "title.ratings.tsv"
 CACHE_MAX_AGE_HOURS = 24
 
 _ratings = None  # imdb_id -> (rating, votes)
 
 
 def _ensure_dir():
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _download():
-    gz_path = CACHE_FILE + ".gz"
+    gz_path = Path(f"{CACHE_FILE}.gz")
     print(f"  Downloading IMDb dataset...")
-    urllib.request.urlretrieve(DATASET_URL, gz_path)
-    with gzip.open(gz_path, 'rb') as f_in:
-        with open(CACHE_FILE, 'wb') as f_out:
+    urllib.request.urlretrieve(DATASET_URL, str(gz_path))
+    with gzip.open(gz_path, "rb") as f_in:
+        with open(CACHE_FILE, "wb") as f_out:
             f_out.write(f_in.read())
-    os.remove(gz_path)
+    gz_path.unlink(missing_ok=True)
     print(f"  Downloaded and extracted.")
 
 
 def _cache_valid():
-    if not os.path.exists(CACHE_FILE):
+    if not CACHE_FILE.exists():
         return False
-    mtime = datetime.fromtimestamp(os.path.getmtime(CACHE_FILE))
+    mtime = datetime.fromtimestamp(CACHE_FILE.stat().st_mtime)
     return (datetime.now() - mtime) < timedelta(hours=CACHE_MAX_AGE_HOURS)
 
 
@@ -47,7 +49,7 @@ def load_ratings(force=False):
 
     print("  Parsing IMDb ratings...")
     _ratings = {}
-    with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
         header = f.readline()  # skip header
         for line in f:
             parts = line.strip().split('\t')

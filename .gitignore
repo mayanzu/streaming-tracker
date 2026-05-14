@@ -1,13 +1,31 @@
 # Environment
 .env
+.env.*
+!.env.example
 
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
+.venv/
+venv/
 
-# Database
+# Runtime data and caches
+data/
 *.db
+*.sqlite
+*.sqlite3
+*.tsv
+*.tsv.gz
+*.tar
+*.log
+*.out
+ssh_out.txt
+ssh_err.txt
+daemon*.json
+
+# Local agent/tool state
+.claude/
 
 # IDE
 .vscode/

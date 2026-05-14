@@ -1,12 +1,11 @@
 """
 清理数据库：删除 IMDb<7.0 或超过2年的作品
 """
-import sqlite3
 import os
-import sys
-sys.path.insert(0, '.')
 from datetime import datetime, timedelta
-from app.config import DATABASE_URL
+
+from app.config import DATABASE_URL, MIN_IMDB_RATING
+from app.database import get_db_connection
 
 
 def clean_db():
@@ -14,7 +13,7 @@ def clean_db():
         print("数据库不存在")
         return
 
-    conn = sqlite3.connect(DATABASE_URL)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cutoff = (datetime.now() - timedelta(days=1825)).strftime("%Y-%m-%d")
 
@@ -24,7 +23,7 @@ def clean_db():
     # 统计
     cursor.execute("SELECT COUNT(*) FROM titles WHERE imdb_rating IS NULL")
     no_rating = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM titles WHERE imdb_rating < 7.0")
+    cursor.execute("SELECT COUNT(*) FROM titles WHERE imdb_rating < ?", (MIN_IMDB_RATING,))
     low_rating = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM titles WHERE release_date < ?", (cutoff,))
     old = cursor.fetchone()[0]
@@ -33,9 +32,9 @@ def clean_db():
     cursor.execute("""
         DELETE FROM titles WHERE
             imdb_rating IS NULL
-            OR imdb_rating < 7.0
+            OR imdb_rating < ?
             OR release_date < ?
-    """, (cutoff,))
+    """, (MIN_IMDB_RATING, cutoff))
 
     cursor.execute("""
         DELETE FROM title_providers WHERE title_id NOT IN (SELECT id FROM titles)

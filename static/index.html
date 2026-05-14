@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0a0a0e">
     <title>Streaming Tracker</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=7">
 </head>
 <body>
 
@@ -51,13 +51,14 @@
         </div>
     </header>
 
-    <div class="stats-bar">
+    <div class="stats-bar" aria-live="polite">
         <span id="stats-info">加载中...</span>
     </div>
 
     <div class="content-area">
         <div class="titles-grid" id="titles-grid"></div>
-        <div id="scroll-loader" class="scroll-loader hidden">
+        <div id="scroll-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
+        <div id="scroll-loader" class="scroll-loader hidden" aria-live="polite">
             <div class="spinner"></div>
             加载更多...
         </div>
@@ -68,13 +69,13 @@
 
     <div id="detail-modal" class="modal-overlay hidden">
         <div class="modal-panel">
-            <button class="modal-close" id="close-modal">
+            <button class="modal-close" id="close-modal" aria-label="关闭详情">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
             <div class="modal-body" id="detail-content"></div>
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=4"></script>
+    <script src="/static/js/app.js?v=7"></script>
 </body>
 </html>

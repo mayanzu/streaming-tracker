@@ -9,4 +9,10 @@ services:
     environment:
       - TMDB_API_KEY=${TMDB_API_KEY}
       - OMDB_API_KEY=${OMDB_API_KEY}
+      - SYNC_ENABLED=${SYNC_ENABLED:-true}
+      - SYNC_HOUR=${SYNC_HOUR:-6}
+      - SYNC_MINUTE=${SYNC_MINUTE:-0}
+      - SYNC_TIMEZONE=${SYNC_TIMEZONE:-Asia/Shanghai}
+      - SYNC_DAYS_BACK=${SYNC_DAYS_BACK:-30}
+      - SYNC_MAX_PAGES=${SYNC_MAX_PAGES:-5}
     restart: unless-stopped

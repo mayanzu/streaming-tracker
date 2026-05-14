@@ -60,6 +60,8 @@ body {
     padding-bottom: constant(safe-area-inset-bottom);
 }
 img { max-width: 100%; height: auto; }
+.hidden { display: none !important; }
+button, input, select, a, .title-card { -webkit-tap-highlight-color: transparent; }
 
 /* ---- Typography ---- */
 h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text-primary); }
@@ -177,10 +179,19 @@ header {
     cursor: pointer; white-space: nowrap;
     display: inline-flex; align-items: center; gap: 4px;
     transition: all var(--transition-fast);
-    min-height: 28px; /* touch target */
+    min-height: 32px;
 }
 .filter-btn:hover { background: var(--bg-hover); border-color: rgba(255,255,255,0.1); color: var(--text-primary); }
 .filter-btn.active { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.15); color: var(--text-primary); font-weight: 600; }
+.filter-btn:focus-visible,
+.filter-select:focus-visible,
+.search-wrap input:focus-visible,
+.title-card:focus-visible,
+.modal-close:focus-visible,
+.modal-link:focus-visible {
+    outline: 2px solid rgba(255,255,255,0.36);
+    outline-offset: 2px;
+}
 
 .provider-dot { width: 4px; height: 4px; border-radius: 50%; flex-shrink: 0; }
 
@@ -200,7 +211,7 @@ header {
     background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236e6e7a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 8px center;
     transition: all var(--transition-fast);
-    min-height: 28px;
+    min-height: 32px;
 }
 .filter-select:hover { background-color: var(--bg-hover); border-color: rgba(255,255,255,0.1); }
 
@@ -236,8 +247,7 @@ header {
     transition: transform var(--transition-smooth), box-shadow var(--transition-smooth);
     box-shadow: var(--shadow-card);
     -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation; /* Faster tap response on mobile */
-    /* Prevent flash of overlay on tap */
+    touch-action: manipulation;
     -webkit-user-select: none;
     user-select: none;
 }
@@ -300,10 +310,17 @@ header {
 
 /* ---- Loader & Empty ---- */
 .scroll-loader { display: flex; flex-direction: column; align-items: center; padding: 48px 0; color: var(--text-tertiary); font-size: 0.75rem; letter-spacing: 0.02em; }
+.scroll-sentinel { height: 24px; }
 .spinner { width: 22px; height: 22px; border: 2px solid rgba(255,255,255,0.06); border-top-color: rgba(255,255,255,0.2); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 10px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .empty-state { grid-column: 1 / -1; text-align: center; padding: 64px 0; color: var(--text-tertiary); }
+.empty-icon {
+    width: 40px; height: 40px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--bg-tertiary); color: var(--text-secondary);
+    font-weight: 700;
+}
 .empty-state p { font-size: 0.85rem; letter-spacing: -0.005em; margin-top: 6px; }
 
 /* ============================================
@@ -456,6 +473,22 @@ header {
     .modal-info h2 { font-size: 1.5rem; }
     .modal-overview { font-size: 0.85rem; }
     .modal-close { top: 14px; right: 14px; width: 34px; height: 34px; }
+}
+
+@media (max-width: 420px) {
+    .header-inner {
+        gap: 10px;
+    }
+    .header-left h1 {
+        font-size: 0.92rem;
+    }
+    .search-wrap {
+        width: min(52vw, 210px);
+    }
+    .filter-btn,
+    .filter-select {
+        min-height: 36px;
+    }
 }
 
 /* ============================================
