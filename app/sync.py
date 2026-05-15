@@ -8,12 +8,10 @@ from app.config import (
     SYNC_BOOTSTRAP_ON_EMPTY,
     SYNC_BOOTSTRAP_DAYS_BACK,
     SYNC_BOOTSTRAP_MAX_PAGES,
-    SYNC_BOOTSTRAP_WINDOW_DAYS,
     SYNC_DAYS_BACK,
     SYNC_MAX_PAGES,
     SYNC_WINDOW_DAYS,
     TMDB_API_KEY,
-    PROVIDERS,
 )
 from app.database import (
     count_titles,
@@ -25,7 +23,7 @@ from app.database import (
     purge_untrusted_titles,
     record_sync_error,
 )
-from app.fetcher import empty_fetch_stats, fetch_provider_titles, merge_fetch_stats
+from app.fetcher import fetch_all_providers
 
 logger = logging.getLogger(__name__)
 _sync_lock = asyncio.Lock()
@@ -71,7 +69,6 @@ async def sync_new_titles(
                 "last_result": None,
             }
         )
-        result = None
         try:
             if not TMDB_API_KEY:
                 logger.warning("TMDB_API_KEY is not configured; skipping sync")
@@ -91,62 +88,34 @@ async def sync_new_titles(
                 max_pages,
                 window_days,
             )
+            fetch_result = await fetch_all_providers(
+                days_back=days_back, max_pages=max_pages, window_days=window_days
+            )
+            titles = fetch_result["titles"]
+            fetch_stats = fetch_result["stats"]
+
             processed = skipped = 0
-            fetch_stats = empty_fetch_stats()
-
-            for provider_name in PROVIDERS:
-                provider_result = await fetch_provider_titles(
-                    provider_name,
-                    days_back=days_back,
-                    max_pages=max_pages,
-                    window_days=window_days,
-                )
-                merge_fetch_stats(fetch_stats, provider_result["stats"])
-
-                for title in provider_result["titles"]:
-                    try:
-                        insert_title(title)
-                        processed += 1
-                    except Exception:
-                        skipped += 1
-                        logger.exception("Failed to upsert title %s", title.get("title", "?"))
-                        record_sync_error(
-                            sync_run_id,
-                            title.get("title", "?"),
-                            "failed_to_upsert",
-                        )
-
-                result = {
-                    "processed": processed,
-                    "skipped": skipped,
-                    "reason": reason,
-                    "discovered": fetch_stats.get("discovered", 0),
-                    "qualified": fetch_stats.get("qualified", 0),
-                    "no_rating": fetch_stats.get("no_rating", 0),
-                    "low_rating": fetch_stats.get("low_rating", 0),
-                    "current_provider": provider_name,
-                }
-                _sync_state["last_result"] = result
-                logger.info(
-                    "TMDB provider sync finished: provider=%s processed=%s discovered=%s",
-                    provider_name,
-                    processed,
-                    result["discovered"],
-                )
+            for title in titles:
+                try:
+                    insert_title(title)
+                    processed += 1
+                except Exception:
+                    skipped += 1
+                    logger.exception("Failed to upsert title %s", title.get("title", "?"))
+                    record_sync_error(sync_run_id, title.get("title", "?"), "failed_to_upsert")
 
             for error in fetch_stats.get("errors", []):
                 record_sync_error(sync_run_id, "fetch", error)
 
-            if result is None:
-                result = {
-                    "processed": processed,
-                    "skipped": skipped,
-                    "reason": reason,
-                    "discovered": 0,
-                    "qualified": 0,
-                    "no_rating": 0,
-                    "low_rating": 0,
-                }
+            result = {
+                "processed": processed,
+                "skipped": skipped,
+                "reason": reason,
+                "discovered": fetch_stats.get("discovered", 0),
+                "qualified": fetch_stats.get("qualified", 0),
+                "no_rating": fetch_stats.get("no_rating", 0),
+                "low_rating": fetch_stats.get("low_rating", 0),
+            }
             status = "partial" if fetch_stats.get("errors") or skipped else "success"
             finish_sync_run(sync_run_id, status, result)
             logger.info(
@@ -173,7 +142,7 @@ async def sync_new_titles(
                     "current_run_id": None,
                     "current_reason": None,
                     "last_finished_at": _now_iso(),
-                    "last_result": result,
+                    "last_result": locals().get("result"),
                 }
             )
 
@@ -201,7 +170,7 @@ async def sync_if_empty():
         return await sync_new_titles(
             days_back=SYNC_BOOTSTRAP_DAYS_BACK,
             max_pages=SYNC_BOOTSTRAP_MAX_PAGES,
-            window_days=SYNC_BOOTSTRAP_WINDOW_DAYS,
+            window_days=SYNC_WINDOW_DAYS,
             reason="untrusted_rating_rebuild",
         )
 
@@ -224,6 +193,6 @@ async def sync_if_empty():
     return await sync_new_titles(
         days_back=SYNC_BOOTSTRAP_DAYS_BACK,
         max_pages=SYNC_BOOTSTRAP_MAX_PAGES,
-        window_days=SYNC_BOOTSTRAP_WINDOW_DAYS,
+        window_days=SYNC_WINDOW_DAYS,
         reason="empty_database_bootstrap",
     )

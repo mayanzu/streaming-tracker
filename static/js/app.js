@@ -21,7 +21,6 @@ const ratingSourceNames = {
 
 let providerCounts = {};
 let bootstrapPollTimer = null;
-let bootstrapPartialShown = false;
 const posterFallback = `data:image/svg+xml,${encodeURIComponent(`
 <svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750">
   <rect width="500" height="750" fill="#18181e"/>
@@ -226,16 +225,6 @@ function hasActiveFilters() {
     return Boolean(state.provider || state.type || state.search || state.year || state.rating > 0);
 }
 
-async function loadStatsSnapshot() {
-    try {
-        const res = await fetch('/api/stats');
-        if (!res.ok) return null;
-        return await res.json();
-    } catch (e) {
-        return null;
-    }
-}
-
 async function checkBootstrapSync() {
     try {
         const status = await loadSyncStatus();
@@ -255,23 +244,9 @@ async function checkBootstrapSync() {
         if (!bootstrapPollTimer) {
             bootstrapPollTimer = setInterval(async () => {
                 const next = await loadSyncStatus();
-                if (next?.sync?.running) {
-                    if (!bootstrapPartialShown && !hasActiveFilters()) {
-                        const stats = await loadStatsSnapshot();
-                        if ((stats?.total || 0) > 0) {
-                            bootstrapPartialShown = true;
-                            await loadProviders();
-                            await loadYears();
-                            resetAndLoad();
-                        }
-                    }
-                    return;
-                }
-
                 if (!next?.sync?.running) {
                     clearInterval(bootstrapPollTimer);
                     bootstrapPollTimer = null;
-                    bootstrapPartialShown = false;
                     await loadProviders();
                     await loadYears();
                     resetAndLoad();
