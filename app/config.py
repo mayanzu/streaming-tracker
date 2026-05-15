@@ -37,13 +37,15 @@ PROVIDERS = {
     "hulu": 15,
 }
 
+CHINESE_FOCUSED_REGIONS = ("TW", "HK", "SG", "MY")
+
 DEFAULT_PROVIDER_REGIONS = {
-    "netflix": ("JP",),
-    "disney": ("JP",),
-    "max": ("BR",),
-    "amazon": ("JP",),
-    "apple": ("JP",),
-    "hulu": ("JP",),
+    "netflix": CHINESE_FOCUSED_REGIONS,
+    "disney": CHINESE_FOCUSED_REGIONS,
+    "max": CHINESE_FOCUSED_REGIONS,
+    "amazon": (*CHINESE_FOCUSED_REGIONS, "JP"),
+    "apple": CHINESE_FOCUSED_REGIONS,
+    "hulu": (*CHINESE_FOCUSED_REGIONS, "JP"),
 }
 
 
@@ -51,7 +53,8 @@ def _provider_regions(provider_name):
     value = os.getenv(f"{provider_name.upper()}_WATCH_REGIONS", "")
     if not value:
         return DEFAULT_PROVIDER_REGIONS[provider_name]
-    return tuple(region.strip().upper() for region in value.split(",") if region.strip())
+    regions = tuple(region.strip().upper() for region in value.split(",") if region.strip())
+    return regions or DEFAULT_PROVIDER_REGIONS[provider_name]
 
 
 PROVIDER_REGIONS = {

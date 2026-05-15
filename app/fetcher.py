@@ -6,6 +6,7 @@ import httpx
 from deep_translator import GoogleTranslator
 
 from app.config import (
+    DEFAULT_PROVIDER_REGIONS,
     ENRICH_CONCURRENCY,
     MIN_IMDB_RATING,
     MIN_IMDB_VOTES,
@@ -143,7 +144,7 @@ async def fetch_new_releases(provider_name, days_back=1825, max_pages=29, window
         raise ValueError("TMDB_API_KEY is required")
 
     provider_id = PROVIDERS[provider_name]
-    regions = PROVIDER_REGIONS.get(provider_name) or ("JP",)
+    regions = PROVIDER_REGIONS.get(provider_name) or DEFAULT_PROVIDER_REGIONS.get(provider_name, ())
     added_date = datetime.now().strftime("%Y-%m-%d")
     results = {}
 
@@ -358,7 +359,7 @@ async def fetch_provider_titles(
 
 async def fetch_all_providers(days_back=1825, max_pages=29, window_days=90, progress_callback=None):
     """全平台抓取 -> 评分补全 -> 只返回达标作品。"""
-    all_titles = []
+    titles_by_key = {}
     stats = empty_fetch_stats()
 
     async with httpx.AsyncClient(timeout=20) as client:
@@ -375,8 +376,16 @@ async def fetch_all_providers(days_back=1825, max_pages=29, window_days=90, prog
                 progress_callback=progress_callback,
             )
             merge_fetch_stats(stats, provider_result["stats"])
-            all_titles.extend(provider_result["titles"])
+            for title in provider_result["titles"]:
+                key = (title["type"], title["tmdb_id"])
+                existing = titles_by_key.get(key)
+                if existing:
+                    providers = (existing.get("providers") or []) + (title.get("providers") or [])
+                    existing["providers"] = list(dict.fromkeys(providers))
+                else:
+                    titles_by_key[key] = title
 
+    all_titles = list(titles_by_key.values())
     stats["qualified"] = len(all_titles)
     logger.info(
         "Fetch finished discovered=%s qualified=%s no_rating=%s low_rating=%s",
