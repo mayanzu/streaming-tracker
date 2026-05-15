@@ -31,6 +31,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS titles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tmdb_id INTEGER NOT NULL,
+            imdb_id TEXT,
             title TEXT NOT NULL,
             original_title TEXT,
             type TEXT CHECK(type IN ('movie', 'tv')),
@@ -54,6 +55,7 @@ def init_db():
             "rating_source": "TEXT",
             "rating_votes": "INTEGER",
             "last_synced_at": "TEXT",
+            "imdb_id": "TEXT",
         },
     )
 
@@ -148,6 +150,7 @@ def _ensure_title_identity_schema(cursor):
         CREATE TABLE titles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tmdb_id INTEGER NOT NULL,
+            imdb_id TEXT,
             title TEXT NOT NULL,
             original_title TEXT,
             type TEXT CHECK(type IN ('movie', 'tv')),
@@ -165,12 +168,12 @@ def _ensure_title_identity_schema(cursor):
     """)
     cursor.execute("""
         INSERT INTO titles (
-            id, tmdb_id, title, original_title, type, overview, release_date,
+            id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
             poster_url, imdb_rating, rating_source, rating_votes, added_date,
             last_synced_at, created_at
         )
         SELECT
-            id, tmdb_id, title, original_title, type, overview, release_date,
+            id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
             poster_url, imdb_rating, rating_source, rating_votes, added_date,
             last_synced_at, created_at
         FROM titles_old
@@ -234,6 +237,20 @@ def _normalize_rating_source(title_data):
     return rating, source, title_data.get("rating_votes")
 
 
+def update_title_imdb_id(title_id, imdb_id):
+    if not title_id or not imdb_id:
+        return
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE titles SET imdb_id=?, last_synced_at=? WHERE id=?",
+        (imdb_id, _utc_now(), title_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def insert_title(title_data):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -251,11 +268,12 @@ def insert_title(title_data):
         if existing:
             cursor.execute("""
                 UPDATE titles SET
-                    title=?, original_title=?, type=?, overview=?,
+                    imdb_id=?, title=?, original_title=?, type=?, overview=?,
                     release_date=?, poster_url=?, imdb_rating=?,
                     rating_source=?, rating_votes=?, added_date=?, last_synced_at=?
                 WHERE tmdb_id=? AND type=?
             """, (
+                title_data.get('imdb_id'),
                 title_data['title'], title_data['original_title'],
                 title_data['type'], title_data['overview'],
                 title_data['release_date'], title_data['poster_url'],
@@ -268,11 +286,11 @@ def insert_title(title_data):
         else:
             cursor.execute("""
                 INSERT INTO titles
-                (tmdb_id, title, original_title, type, overview, release_date,
+                (tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                  poster_url, imdb_rating, rating_source, rating_votes, added_date, last_synced_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
-                title_data['tmdb_id'], title_data['title'],
+                title_data['tmdb_id'], title_data.get('imdb_id'), title_data['title'],
                 title_data['original_title'], title_data['type'],
                 title_data['overview'], title_data['release_date'],
                 title_data['poster_url'], rating,

@@ -425,6 +425,8 @@ header {
 }
 .modal-link:hover { background: var(--bg-hover); border-color: rgba(255,255,255,0.12); color: var(--text-primary); }
 .modal-link svg { width: 13px; height: 13px; opacity: 0.6; }
+.modal-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.modal-link.imdb-link { color: var(--accent); }
 
 /* ============================================
    TIER 2 — 600px+ (small tablet / large phone landscape)

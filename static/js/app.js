@@ -296,7 +296,6 @@ function renderTitles(titles, clear) {
         const ratingCls = rating > 0 ? 'card-rating' : 'card-rating no-rating';
         const ratingText = rating > 0 ? rating.toFixed(1) : '—';
         const sourceText = t.rating_source ? ratingSourceNames[t.rating_source] || 'IMDb' : '';
-        const ratingLabel = sourceText ? `${ratingText} ${sourceText}` : ratingText;
         const poster = t.poster_url || posterFallback;
         const typeLabel = t.type === 'movie' ? '电影' : '电视剧';
         const title = escapeHtml(t.title);
@@ -321,7 +320,7 @@ function renderTitles(titles, clear) {
             <div class="card-info">
                 <div class="card-title">${title}</div>
                 <div class="card-meta">
-                    <span class="${ratingCls}" title="${escapeHtml(sourceText || '评分来源待更新')}">${escapeHtml(ratingLabel)}</span>
+                    <span class="${ratingCls}" title="${escapeHtml(sourceText || '评分来源待更新')}">${escapeHtml(ratingText)}</span>
                     <span class="card-date">${releaseDate}</span>
                 </div>
                 <div class="card-overview">${overview}</div>
@@ -368,10 +367,8 @@ async function showDetail(id) {
 function renderDetail(t) {
     const rating = t.imdb_rating || 0;
     const ratingText = rating > 0 ? rating.toFixed(1) : '暂无评分';
-    const sourceText = t.rating_source
-        ? ratingSourceNames[t.rating_source] || 'IMDb'
-        : '评分来源待更新';
-    const votesText = t.rating_votes ? `IMDb ${Number(t.rating_votes).toLocaleString()} 票` : 'IMDb 票数待更新';
+    const imdbRatingText = rating > 0 ? `IMDb ${ratingText}` : 'IMDb 暂无评分';
+    const votesText = t.rating_votes ? `${Number(t.rating_votes).toLocaleString()} 票` : '票数待更新';
     const poster = t.poster_url || posterFallback;
     const typeLabel = t.type === 'movie' ? '电影' : '电视剧';
     const title = escapeHtml(t.title);
@@ -380,12 +377,19 @@ function renderDetail(t) {
     const overview = escapeHtml(t.overview || '暂无简介');
     const tmdbType = t.type === 'movie' ? 'movie' : 'tv';
     const tmdbId = encodeURIComponent(t.tmdb_id);
+    const imdbId = t.imdb_id ? encodeURIComponent(t.imdb_id) : '';
 
     const providersHtml = (t.providers || []).map(p => {
         const color = providerColors[p] || '#666';
         return `<span class="modal-provider">
             <span class="p-dot" style="background:${color}"></span>${escapeHtml(providerNames[p] || p)}</span>`;
     }).join('');
+    const imdbLinkHtml = imdbId
+        ? `<a href="https://www.imdb.com/title/${imdbId}/" target="_blank" rel="noopener noreferrer" class="modal-link imdb-link">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 17L17 7"/><path d="M8 7h9v9"/></svg>
+                在 IMDb 查看
+            </a>`
+        : '';
 
     document.getElementById('detail-content').innerHTML = `
         <div class="modal-poster">
@@ -396,8 +400,7 @@ function renderDetail(t) {
             <h2>${title}</h2>
             ${originalTitle ? `<p class="original-title">${originalTitle}</p>` : ''}
             <div class="meta-tags">
-                <span class="meta-tag rating-tag">${ratingText}</span>
-                <span class="meta-tag">${sourceText}</span>
+                <span class="meta-tag rating-tag">${imdbRatingText}</span>
                 <span class="meta-tag">${votesText}</span>
                 <span class="meta-tag">${typeLabel}</span>
                 <span class="meta-tag">${releaseDate}</span>
@@ -405,10 +408,13 @@ function renderDetail(t) {
             <div class="modal-providers">${providersHtml}</div>
             <h3>剧情简介</h3>
             <p class="modal-overview">${overview}</p>
-            <a href="https://www.themoviedb.org/${tmdbType}/${tmdbId}" target="_blank" rel="noopener noreferrer" class="modal-link">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                在 TMDB 查看
-            </a>
+            <div class="modal-links">
+                ${imdbLinkHtml}
+                <a href="https://www.themoviedb.org/${tmdbType}/${tmdbId}" target="_blank" rel="noopener noreferrer" class="modal-link">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    在 TMDB 查看
+                </a>
+            </div>
         </div>`;
 }
 

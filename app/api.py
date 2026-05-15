@@ -2,8 +2,16 @@ from datetime import date, datetime
 
 from fastapi import APIRouter, Query, HTTPException, Request, Response
 
-from app.database import check_database, get_titles, get_title_detail, get_providers, get_stats
+from app.database import (
+    check_database,
+    get_providers,
+    get_stats,
+    get_title_detail,
+    get_titles,
+    update_title_imdb_id,
+)
 from app.config import PROVIDERS, TMDB_API_KEY
+from app.fetcher import fetch_tmdb
 from app.scheduler import get_scheduler_status
 
 router = APIRouter()
@@ -94,6 +102,18 @@ async def get_title(title_id: int):
     title = get_title_detail(title_id)
     if not title:
         raise HTTPException(status_code=404, detail="作品未找到")
+
+    if not title.get("imdb_id") and TMDB_API_KEY:
+        tmdb_type = "movie" if title["type"] == "movie" else "tv"
+        details = await fetch_tmdb(
+            f"/{tmdb_type}/{title['tmdb_id']}",
+            {"append_to_response": "external_ids"},
+        )
+        imdb_id = details.get("external_ids", {}).get("imdb_id")
+        if imdb_id:
+            update_title_imdb_id(title["id"], imdb_id)
+            title["imdb_id"] = imdb_id
+
     return title
 
 

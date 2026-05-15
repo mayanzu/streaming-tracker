@@ -235,6 +235,8 @@ async def enrich_with_imdb(title_data, client=None):
                 title_data["overview"] = await translate_to_chinese(en["overview"])
 
         imdb_id = details.get("external_ids", {}).get("imdb_id")
+        if imdb_id:
+            title_data["imdb_id"] = imdb_id
         rating, votes, source = await get_imdb_rating(imdb_id)
         if rating is not None:
             title_data["imdb_rating"] = rating
