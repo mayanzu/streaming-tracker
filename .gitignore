@@ -11,7 +11,7 @@ __pycache__/
 venv/
 
 # Runtime data and caches
-data/
+data/*
 *.db
 *.sqlite
 *.sqlite3
@@ -23,6 +23,8 @@ data/
 ssh_out.txt
 ssh_err.txt
 daemon*.json
+!data/
+!data/tracker.db
 
 # Local agent/tool state
 .claude/

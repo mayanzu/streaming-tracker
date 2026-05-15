@@ -2,7 +2,7 @@ __pycache__
 *.pyc
 *.pyo
 .env
-data/
+data/*
 .git
 .gitignore
 *.md
@@ -13,8 +13,11 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
+!data/tracker.db
 *.tsv
 *.tsv.gz
+*.log
+*.out
 ssh_out.txt
 ssh_err.txt
 daemon*.json
