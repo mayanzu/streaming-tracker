@@ -19,7 +19,7 @@ from app.config import (
     SYNC_BOOTSTRAP_DAYS_BACK,
     SYNC_BOOTSTRAP_MAX_PAGES,
 )
-from app.database import get_latest_finished_sync_run
+from app.database import get_latest_finished_sync_run, get_latest_sync_run
 from app.sync import get_sync_state, sync_new_titles
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,7 @@ def get_scheduler_status(scheduler):
         job = scheduler.get_job(JOB_ID)
     next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
     latest_finished_sync = get_latest_finished_sync_run()
+    latest_sync = get_latest_sync_run()
 
     return {
         "enabled": SYNC_ENABLED,
@@ -97,5 +98,6 @@ def get_scheduler_status(scheduler):
         "bootstrap_days_back": SYNC_BOOTSTRAP_DAYS_BACK,
         "bootstrap_max_pages": SYNC_BOOTSTRAP_MAX_PAGES,
         "sync": get_sync_state(),
+        "latest_run": latest_sync,
         "latest_finished_sync": latest_finished_sync,
     }

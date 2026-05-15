@@ -12,6 +12,7 @@ from app.config import (
     SYNC_MAX_PAGES,
     SYNC_WINDOW_DAYS,
     TMDB_API_KEY,
+    PROVIDERS,
 )
 from app.database import (
     count_titles,
@@ -25,8 +26,9 @@ from app.database import (
     purge_all_titles,
     purge_untrusted_titles,
     record_sync_error,
+    update_sync_run_progress,
 )
-from app.fetcher import fetch_all_providers
+from app.fetcher import empty_fetch_stats, fetch_provider_titles, merge_fetch_stats
 
 logger = logging.getLogger(__name__)
 _sync_lock = asyncio.Lock()
@@ -59,6 +61,21 @@ def _is_incomplete_bootstrap(sync_run):
         and sync_run.get("status") == "running"
         and sync_run.get("reason") in BOOTSTRAP_REASONS
     )
+
+
+def _result_from_stats(reason, processed, skipped, fetch_stats, extra=None):
+    result = {
+        "processed": processed,
+        "skipped": skipped,
+        "reason": reason,
+        "discovered": fetch_stats.get("discovered", 0),
+        "qualified": fetch_stats.get("qualified", 0),
+        "no_rating": fetch_stats.get("no_rating", 0),
+        "low_rating": fetch_stats.get("low_rating", 0),
+    }
+    if extra:
+        result.update(extra)
+    return result
 
 
 async def sync_new_titles(
@@ -104,34 +121,98 @@ async def sync_new_titles(
                 max_pages,
                 window_days,
             )
-            fetch_result = await fetch_all_providers(
-                days_back=days_back, max_pages=max_pages, window_days=window_days
-            )
-            titles = fetch_result["titles"]
-            fetch_stats = fetch_result["stats"]
-
             processed = skipped = 0
-            for title in titles:
-                try:
-                    insert_title(title)
-                    processed += 1
-                except Exception:
-                    skipped += 1
-                    logger.exception("Failed to upsert title %s", title.get("title", "?"))
-                    record_sync_error(sync_run_id, title.get("title", "?"), "failed_to_upsert")
+            fetch_stats = empty_fetch_stats()
+
+            def report_progress(progress):
+                current = progress.get("provider")
+                progress_stats = dict(fetch_stats)
+                partial_stats = progress.get("stats") or {}
+                for key in ("discovered", "qualified", "no_rating", "low_rating"):
+                    progress_stats[key] += partial_stats.get(key, 0)
+                db_progress = dict(progress)
+                db_progress["stats"] = progress_stats
+                db_progress["processed"] = processed
+                db_progress["skipped"] = skipped
+                update_sync_run_progress(sync_run_id, db_progress)
+                _sync_state["last_result"] = {
+                    "processed": processed,
+                    "skipped": skipped,
+                    "reason": reason,
+                    "phase": progress.get("phase"),
+                    "current_provider": current,
+                    "current_provider_index": progress.get("provider_index", 0),
+                    "provider_total": progress.get("provider_total", 0),
+                    "current_provider_discovered": progress.get("provider_discovered", 0),
+                    "current_provider_qualified": progress.get("provider_qualified", 0),
+                    "discovered": progress_stats.get("discovered", 0),
+                    "qualified": progress_stats.get("qualified", 0),
+                    "no_rating": progress_stats.get("no_rating", 0),
+                    "low_rating": progress_stats.get("low_rating", 0),
+                }
+
+            provider_total = len(PROVIDERS)
+            for provider_index, provider_name in enumerate(PROVIDERS, start=1):
+                provider_result = await fetch_provider_titles(
+                    provider_name,
+                    days_back=days_back,
+                    max_pages=max_pages,
+                    window_days=window_days,
+                    provider_index=provider_index,
+                    provider_total=provider_total,
+                    progress_callback=report_progress,
+                )
+                merge_fetch_stats(fetch_stats, provider_result["stats"])
+
+                for title in provider_result["titles"]:
+                    try:
+                        insert_title(title)
+                        processed += 1
+                    except Exception:
+                        skipped += 1
+                        logger.exception("Failed to upsert title %s", title.get("title", "?"))
+                        record_sync_error(
+                            sync_run_id,
+                            title.get("title", "?"),
+                            "failed_to_upsert",
+                        )
+
+                result = _result_from_stats(
+                    reason,
+                    processed,
+                    skipped,
+                    fetch_stats,
+                    {
+                        "phase": "persisted",
+                        "current_provider": provider_name,
+                        "current_provider_index": provider_index,
+                        "provider_total": provider_total,
+                    },
+                )
+                _sync_state["last_result"] = result
+                update_sync_run_progress(
+                    sync_run_id,
+                    {
+                        "phase": "persisted",
+                        "provider": provider_name,
+                        "provider_index": provider_index,
+                        "provider_total": provider_total,
+                        "processed": processed,
+                        "skipped": skipped,
+                        "stats": fetch_stats,
+                    },
+                )
+                logger.info(
+                    "TMDB provider persisted: provider=%s processed=%s discovered=%s",
+                    provider_name,
+                    processed,
+                    result["discovered"],
+                )
 
             for error in fetch_stats.get("errors", []):
                 record_sync_error(sync_run_id, "fetch", error)
 
-            result = {
-                "processed": processed,
-                "skipped": skipped,
-                "reason": reason,
-                "discovered": fetch_stats.get("discovered", 0),
-                "qualified": fetch_stats.get("qualified", 0),
-                "no_rating": fetch_stats.get("no_rating", 0),
-                "low_rating": fetch_stats.get("low_rating", 0),
-            }
+            result = _result_from_stats(reason, processed, skipped, fetch_stats)
             status = "partial" if fetch_stats.get("errors") or skipped else "success"
             finish_sync_run(sync_run_id, status, result)
             logger.info(

@@ -36,7 +36,28 @@ PROVIDERS = {
     "apple": 350,
     "hulu": 15,
 }
-WATCH_REGION = os.getenv("WATCH_REGION", "US")
+
+DEFAULT_PROVIDER_REGIONS = {
+    "netflix": ("JP",),
+    "disney": ("JP",),
+    "max": ("BR",),
+    "amazon": ("JP",),
+    "apple": ("JP",),
+    "hulu": ("JP",),
+}
+
+
+def _provider_regions(provider_name):
+    value = os.getenv(f"{provider_name.upper()}_WATCH_REGIONS", "")
+    if not value:
+        return DEFAULT_PROVIDER_REGIONS[provider_name]
+    return tuple(region.strip().upper() for region in value.split(",") if region.strip())
+
+
+PROVIDER_REGIONS = {
+    provider_name: _provider_regions(provider_name)
+    for provider_name in PROVIDERS
+}
 
 # 评分和抓取策略
 MIN_IMDB_RATING = float(os.getenv("MIN_IMDB_RATING", "7.0"))
@@ -54,7 +75,7 @@ SYNC_MINUTE = int(os.getenv("SYNC_MINUTE", "0"))
 SYNC_TIMEZONE = os.getenv("SYNC_TIMEZONE", "Asia/Shanghai")
 SYNC_DAYS_BACK = int(os.getenv("SYNC_DAYS_BACK", "30"))
 SYNC_MAX_PAGES = int(os.getenv("SYNC_MAX_PAGES", "5"))
-SYNC_WINDOW_DAYS = int(os.getenv("SYNC_WINDOW_DAYS", "90"))
+SYNC_WINDOW_DAYS = int(os.getenv("SYNC_WINDOW_DAYS", "0"))
 SYNC_BOOTSTRAP_ON_EMPTY = os.getenv("SYNC_BOOTSTRAP_ON_EMPTY", "true").lower() in (
     "1",
     "true",

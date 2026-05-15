@@ -12,10 +12,10 @@ from app.config import (
     OMDB_API_KEY,
     OMDB_BASE_URL,
     OMDB_MIN_VOTES,
+    PROVIDER_REGIONS,
     PROVIDERS,
     TMDB_API_KEY,
     TMDB_BASE_URL,
-    WATCH_REGION,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,15 +121,16 @@ async def get_imdb_rating(imdb_id):
     return None, 0, None
 
 
-def _date_windows(days_back, window_days):
-    if window_days <= 0:
-        window_days = days_back
+def _discover_date_ranges(days_back, window_days):
+    cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    if window_days <= 0 or window_days >= days_back:
+        yield cutoff, None
+        return
 
     end = datetime.now()
-    cutoff = end - timedelta(days=days_back)
-
-    while end > cutoff:
-        start = max(cutoff, end - timedelta(days=window_days))
+    cutoff_date = end - timedelta(days=days_back)
+    while end > cutoff_date:
+        start = max(cutoff_date, end - timedelta(days=window_days))
         yield start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
         end = start - timedelta(days=1)
 
@@ -142,56 +143,73 @@ async def fetch_new_releases(provider_name, days_back=1825, max_pages=29, window
         raise ValueError("TMDB_API_KEY is required")
 
     provider_id = PROVIDERS[provider_name]
+    regions = PROVIDER_REGIONS.get(provider_name) or ("JP",)
     added_date = datetime.now().strftime("%Y-%m-%d")
     results = {}
 
-    for media_type, date_field, sort_field in [
-        ("movie", "primary_release_date", "primary_release_date.desc"),
-        ("tv", "first_air_date", "first_air_date.desc"),
-    ]:
-        for window_start, window_end in _date_windows(days_back, window_days):
-            for page in range(1, max_pages + 1):
-                data = await fetch_tmdb(
-                    f"/discover/{media_type}",
-                    {
-                        "watch_region": WATCH_REGION,
+    for region in regions:
+        for media_type, date_field, sort_field in [
+            ("movie", "primary_release_date", "primary_release_date.desc"),
+            ("tv", "first_air_date", "first_air_date.desc"),
+        ]:
+            for window_start, window_end in _discover_date_ranges(days_back, window_days):
+                for page in range(1, max_pages + 1):
+                    params = {
+                        "watch_region": region,
                         "with_watch_providers": provider_id,
                         "watch_monetization_types": "flatrate",
                         "sort_by": sort_field,
                         f"{date_field}.gte": window_start,
-                        f"{date_field}.lte": window_end,
                         "page": page,
-                    },
-                    client=client,
-                )
-                page_results = data.get("results", [])
-                if not page_results:
-                    break
-
-                for item in page_results:
-                    if not item.get("poster_path"):
-                        continue
-
-                    key = (media_type, item["id"])
-                    poster_path = item.get("poster_path")
-                    results[key] = {
-                        "tmdb_id": item["id"],
-                        "title": item.get("title") or item.get("name", ""),
-                        "original_title": item.get("original_title")
-                        or item.get("original_name", ""),
-                        "type": media_type,
-                        "overview": item.get("overview", ""),
-                        "release_date": item.get("release_date")
-                        or item.get("first_air_date", ""),
-                        "poster_url": _poster_url(poster_path),
-                        "imdb_rating": None,
-                        "rating_source": None,
-                        "rating_votes": None,
-                        "added_date": added_date,
-                        "providers": [provider_name],
                     }
+                    if window_end:
+                        params[f"{date_field}.lte"] = window_end
+
+                    data = await fetch_tmdb(
+                        f"/discover/{media_type}",
+                        params,
+                        client=client,
+                    )
+                    page_results = data.get("results", [])
+                    if not page_results:
+                        break
+
+                    for item in page_results:
+                        if not item.get("poster_path"):
+                            continue
+
+                        key = (media_type, item["id"])
+                        poster_path = item.get("poster_path")
+                        results[key] = {
+                            "tmdb_id": item["id"],
+                            "title": item.get("title") or item.get("name", ""),
+                            "original_title": item.get("original_title")
+                            or item.get("original_name", ""),
+                            "type": media_type,
+                            "overview": item.get("overview", ""),
+                            "release_date": item.get("release_date")
+                            or item.get("first_air_date", ""),
+                            "poster_url": _poster_url(poster_path),
+                            "imdb_rating": None,
+                            "rating_source": None,
+                            "rating_votes": None,
+                            "added_date": added_date,
+                            "providers": [provider_name],
+                        }
+
+                    total_pages = min(data.get("total_pages", page) or page, max_pages)
+                    if page >= total_pages:
+                        break
 
     return list(results.values())
+
+
+async def _notify_progress(callback, **payload):
+    if not callback:
+        return
+    result = callback(payload)
+    if asyncio.iscoroutine(result):
+        await result
 
 
 async def enrich_with_imdb(title_data, client=None):
@@ -228,11 +246,8 @@ async def enrich_with_imdb(title_data, client=None):
     return title_data
 
 
-async def fetch_all_providers(days_back=1825, max_pages=29, window_days=90):
-    """全平台抓取 -> 评分补全 -> 只返回达标作品。"""
-    sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
-    all_titles = []
-    stats = {
+def empty_fetch_stats():
+    return {
         "discovered": 0,
         "qualified": 0,
         "no_rating": 0,
@@ -240,58 +255,125 @@ async def fetch_all_providers(days_back=1825, max_pages=29, window_days=90):
         "errors": [],
     }
 
+
+def merge_fetch_stats(total, partial):
+    for key in ("discovered", "qualified", "no_rating", "low_rating"):
+        total[key] += partial.get(key, 0)
+    total["errors"].extend(partial.get("errors", []))
+
+
+async def fetch_provider_titles(
+    provider_name,
+    days_back=1825,
+    max_pages=29,
+    window_days=90,
+    provider_index=1,
+    provider_total=1,
+    client=None,
+    progress_callback=None,
+):
+    """抓取单个平台，评分补全后只返回达标作品。"""
+    sem = asyncio.Semaphore(ENRICH_CONCURRENCY)
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(timeout=20)
+
+    stats = empty_fetch_stats()
+    qualified = []
+
+    try:
+        logger.info("Fetching provider=%s", provider_name)
+        titles = await fetch_new_releases(
+            provider_name,
+            days_back=days_back,
+            max_pages=max_pages,
+            window_days=window_days,
+            client=client,
+        )
+        stats["discovered"] = len(titles)
+        logger.info("TMDB discover provider=%s count=%s", provider_name, len(titles))
+        await _notify_progress(
+            progress_callback,
+            phase="discovered",
+            provider=provider_name,
+            provider_index=provider_index,
+            provider_total=provider_total,
+            provider_discovered=len(titles),
+            stats=dict(stats),
+        )
+
+        async def enrich_one(title):
+            async with sem:
+                return await enrich_with_imdb(title, client=client)
+
+        enriched_titles = await asyncio.gather(*(enrich_one(title) for title in titles))
+        qualified = [
+            title
+            for title in enriched_titles
+            if title["imdb_rating"] is not None
+            and title.get("rating_source") in TRUSTED_RATING_SOURCES
+            and title["imdb_rating"] >= MIN_IMDB_RATING
+        ]
+        no_rating = sum(
+            1
+            for title in enriched_titles
+            if title["imdb_rating"] is None
+            or title.get("rating_source") not in TRUSTED_RATING_SOURCES
+        )
+        low_rating = len(enriched_titles) - len(qualified) - no_rating
+
+        stats["qualified"] = len(qualified)
+        stats["no_rating"] = no_rating
+        stats["low_rating"] = low_rating
+        logger.info(
+            "Qualified provider=%s count=%s no_rating=%s low_rating=%s",
+            provider_name,
+            len(qualified),
+            no_rating,
+            low_rating,
+        )
+        await _notify_progress(
+            progress_callback,
+            phase="qualified",
+            provider=provider_name,
+            provider_index=provider_index,
+            provider_total=provider_total,
+            provider_discovered=len(titles),
+            provider_qualified=len(qualified),
+            stats=dict(stats),
+        )
+
+    except Exception as exc:
+        message = f"{provider_name}: {exc}"
+        stats["errors"].append(message)
+        logger.exception("Failed to fetch provider=%s", provider_name)
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    return {"provider": provider_name, "titles": qualified, "stats": stats}
+
+
+async def fetch_all_providers(days_back=1825, max_pages=29, window_days=90, progress_callback=None):
+    """全平台抓取 -> 评分补全 -> 只返回达标作品。"""
+    all_titles = []
+    stats = empty_fetch_stats()
+
     async with httpx.AsyncClient(timeout=20) as client:
-        for provider_name in PROVIDERS:
-            logger.info("Fetching provider=%s", provider_name)
-
-            try:
-                titles = await fetch_new_releases(
-                    provider_name,
-                    days_back=days_back,
-                    max_pages=max_pages,
-                    window_days=window_days,
-                    client=client,
-                )
-                stats["discovered"] += len(titles)
-                logger.info("TMDB discover provider=%s count=%s", provider_name, len(titles))
-
-                async def enrich_one(title):
-                    async with sem:
-                        return await enrich_with_imdb(title, client=client)
-
-                enriched_titles = await asyncio.gather(*(enrich_one(title) for title in titles))
-                qualified = [
-                    title
-                    for title in enriched_titles
-                    if title["imdb_rating"] is not None
-                    and title.get("rating_source") in TRUSTED_RATING_SOURCES
-                    and title["imdb_rating"] >= MIN_IMDB_RATING
-                ]
-                no_rating = sum(
-                    1
-                    for title in enriched_titles
-                    if title["imdb_rating"] is None
-                    or title.get("rating_source") not in TRUSTED_RATING_SOURCES
-                )
-                low_rating = len(enriched_titles) - len(qualified) - no_rating
-
-                stats["qualified"] += len(qualified)
-                stats["no_rating"] += no_rating
-                stats["low_rating"] += low_rating
-                logger.info(
-                    "Qualified provider=%s count=%s no_rating=%s low_rating=%s",
-                    provider_name,
-                    len(qualified),
-                    no_rating,
-                    low_rating,
-                )
-
-                all_titles.extend(qualified)
-
-            except Exception as exc:
-                message = f"{provider_name}: {exc}"
-                stats["errors"].append(message)
-                logger.exception("Failed to fetch provider=%s", provider_name)
+        provider_total = len(PROVIDERS)
+        for provider_index, provider_name in enumerate(PROVIDERS, start=1):
+            provider_result = await fetch_provider_titles(
+                provider_name,
+                days_back=days_back,
+                max_pages=max_pages,
+                window_days=window_days,
+                provider_index=provider_index,
+                provider_total=provider_total,
+                client=client,
+                progress_callback=progress_callback,
+            )
+            merge_fetch_stats(stats, provider_result["stats"])
+            all_titles.extend(provider_result["titles"])
 
     stats["qualified"] = len(all_titles)
     logger.info(

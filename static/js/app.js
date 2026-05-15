@@ -66,11 +66,19 @@ function renderSyncStatus(status) {
     const sync = status.sync || {};
     const latestFinished = status.latest_finished_sync || {};
     const last = sync.last_result || latestFinished || {};
+    const latestRun = status.latest_run || {};
+    const progress = Object.keys(last).length ? last : latestRun;
 
     if (sync.running) {
+        const currentProvider = progress.current_provider;
+        const current = currentProvider ? ` · ${providerNames[currentProvider] || currentProvider}` : '';
+        const providerStep = progress.provider_total
+            ? ` ${progress.current_provider_index || '?'} / ${progress.provider_total}`
+            : '';
+        const discovered = progress.discovered ? ` · 已发现 ${progress.discovered}` : '';
         el.textContent = sync.current_reason === 'untrusted_rating_rebuild'
-            ? 'IMDb 重建中'
-            : '同步中';
+            ? `IMDb 重建中${providerStep}${current}${discovered}`
+            : `同步中${providerStep}${current}${discovered}`;
         el.className = 'sync-pill active';
         return;
     }
@@ -233,12 +241,21 @@ async function checkBootstrapSync() {
         if (!sync.running) return;
 
         const rebuilding = sync.current_reason === 'untrusted_rating_rebuild';
+        const progress = sync.last_result || status.latest_run || {};
+        const current = progress.current_provider;
+        const discovered = progress.discovered || 0;
+        const step = progress.provider_total
+            ? `${progress.current_provider_index || '?'} / ${progress.provider_total} · `
+            : '';
+        const progressText = current
+            ? `当前平台：${step}${providerNames[current] || current}${discovered ? `，已发现 ${discovered} 部候选` : ''}`
+            : '';
         document.getElementById('stats-info').textContent = rebuilding
             ? '正在按 IMDb 评分重建数据...'
             : '首次部署正在抓取数据...';
         document.getElementById('titles-grid').innerHTML = `<div class="empty-state">
             <div class="spinner"></div>
-            <p>${rebuilding ? '正在清理非 IMDb 评分并重新入库' : '正在抓取首批作品，稍后会自动刷新'}</p>
+            <p>${progressText || (rebuilding ? '正在清理非 IMDb 评分并重新入库' : '正在抓取首批作品，稍后会自动刷新')}</p>
         </div>`;
 
         if (!bootstrapPollTimer) {

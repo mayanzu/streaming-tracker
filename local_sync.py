@@ -38,7 +38,7 @@ async def main():
         "--window-days",
         type=int,
         default=SYNC_WINDOW_DAYS,
-        help="把抓取时间范围拆成 N 天一个窗口，避免长时间范围被 TMDB 分页截断",
+        help="把抓取时间范围拆成 N 天一个窗口；0 表示使用一个连续时间范围",
     )
     parser.add_argument("--skip-fetch", action="store_true", help="跳过新片抓取")
     parser.add_argument("--skip-upload", action="store_true", help="跳过数据库上传")

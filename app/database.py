@@ -30,7 +30,7 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS titles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tmdb_id INTEGER UNIQUE,
+            tmdb_id INTEGER NOT NULL,
             title TEXT NOT NULL,
             original_title TEXT,
             type TEXT CHECK(type IN ('movie', 'tv')),
@@ -42,7 +42,8 @@ def init_db():
             rating_votes INTEGER,
             added_date TEXT,
             last_synced_at TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tmdb_id, type)
         )
     """)
 
@@ -65,6 +66,7 @@ def init_db():
             UNIQUE(title_id, provider_name)
         )
     """)
+    _ensure_title_identity_schema(cursor)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sync_runs (
@@ -82,9 +84,23 @@ def init_db():
             skipped INTEGER DEFAULT 0,
             no_rating INTEGER DEFAULT 0,
             low_rating INTEGER DEFAULT 0,
+            current_provider TEXT,
+            current_provider_index INTEGER DEFAULT 0,
+            provider_total INTEGER DEFAULT 0,
+            phase TEXT,
             error TEXT
         )
     """)
+    _ensure_columns(
+        cursor,
+        "sync_runs",
+        {
+            "current_provider": "TEXT",
+            "current_provider_index": "INTEGER DEFAULT 0",
+            "provider_total": "INTEGER DEFAULT 0",
+            "phase": "TEXT",
+        },
+    )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sync_errors (
@@ -97,7 +113,7 @@ def init_db():
         )
     """)
 
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tmdb_id ON titles(tmdb_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tmdb_id_type ON titles(tmdb_id, type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_imdb_rating ON titles(imdb_rating)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_type ON titles(type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_added_date ON titles(added_date)")
@@ -107,6 +123,76 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+
+def _ensure_title_identity_schema(cursor):
+    cursor.execute("PRAGMA index_list(titles)")
+    indexes = cursor.fetchall()
+    has_legacy_unique = False
+    for index in indexes:
+        if not index["unique"]:
+            continue
+        cursor.execute(f"PRAGMA index_info({index['name']})")
+        columns = [row["name"] for row in cursor.fetchall()]
+        if columns == ["tmdb_id"]:
+            has_legacy_unique = True
+            break
+
+    if not has_legacy_unique:
+        return
+
+    cursor.execute("PRAGMA foreign_keys = OFF")
+    cursor.execute("ALTER TABLE title_providers RENAME TO title_providers_old")
+    cursor.execute("ALTER TABLE titles RENAME TO titles_old")
+    cursor.execute("""
+        CREATE TABLE titles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tmdb_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            original_title TEXT,
+            type TEXT CHECK(type IN ('movie', 'tv')),
+            overview TEXT,
+            release_date TEXT,
+            poster_url TEXT,
+            imdb_rating REAL,
+            rating_source TEXT,
+            rating_votes INTEGER,
+            added_date TEXT,
+            last_synced_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tmdb_id, type)
+        )
+    """)
+    cursor.execute("""
+        INSERT INTO titles (
+            id, tmdb_id, title, original_title, type, overview, release_date,
+            poster_url, imdb_rating, rating_source, rating_votes, added_date,
+            last_synced_at, created_at
+        )
+        SELECT
+            id, tmdb_id, title, original_title, type, overview, release_date,
+            poster_url, imdb_rating, rating_source, rating_votes, added_date,
+            last_synced_at, created_at
+        FROM titles_old
+    """)
+    cursor.execute("""
+        CREATE TABLE title_providers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title_id INTEGER,
+            provider_name TEXT,
+            FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE,
+            UNIQUE(title_id, provider_name)
+        )
+    """)
+    cursor.execute("""
+        INSERT OR IGNORE INTO title_providers (id, title_id, provider_name)
+        SELECT id, title_id, provider_name
+        FROM title_providers_old
+        WHERE title_id IN (SELECT id FROM titles)
+    """)
+    cursor.execute("DROP TABLE title_providers_old")
+    cursor.execute("DROP TABLE titles_old")
+    cursor.execute("PRAGMA foreign_keys = ON")
 
 
 def _ensure_columns(cursor, table, columns):
@@ -156,7 +242,10 @@ def insert_title(title_data):
         raise ValueError("trusted IMDb rating is required")
 
     try:
-        cursor.execute("SELECT id FROM titles WHERE tmdb_id = ?", (title_data['tmdb_id'],))
+        cursor.execute(
+            "SELECT id FROM titles WHERE tmdb_id = ? AND type = ?",
+            (title_data['tmdb_id'], title_data['type']),
+        )
         existing = cursor.fetchone()
 
         if existing:
@@ -165,7 +254,7 @@ def insert_title(title_data):
                     title=?, original_title=?, type=?, overview=?,
                     release_date=?, poster_url=?, imdb_rating=?,
                     rating_source=?, rating_votes=?, added_date=?, last_synced_at=?
-                WHERE tmdb_id=?
+                WHERE tmdb_id=? AND type=?
             """, (
                 title_data['title'], title_data['original_title'],
                 title_data['type'], title_data['overview'],
@@ -173,7 +262,7 @@ def insert_title(title_data):
                 rating, rating_source,
                 rating_votes, title_data['added_date'],
                 title_data.get('last_synced_at') or _utc_now(),
-                title_data['tmdb_id']
+                title_data['tmdb_id'], title_data['type']
             ))
             title_id = existing['id']
         else:
@@ -246,6 +335,65 @@ def finish_sync_run(sync_run_id, status, result):
             result.get("no_rating", 0),
             result.get("low_rating", 0),
             result.get("error"),
+            sync_run_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_sync_run_progress(sync_run_id, progress):
+    if not sync_run_id:
+        return
+
+    stats = progress.get("stats") or {}
+    processed = progress.get("processed")
+    skipped = progress.get("skipped")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if processed is not None and skipped is not None:
+        cursor.execute(
+            """
+            UPDATE sync_runs
+            SET discovered=?, qualified=?, processed=?, skipped=?,
+                no_rating=?, low_rating=?, current_provider=?,
+                current_provider_index=?, provider_total=?, phase=?
+            WHERE id=?
+            """,
+            (
+                stats.get("discovered", 0),
+                stats.get("qualified", 0),
+                processed,
+                skipped,
+                stats.get("no_rating", 0),
+                stats.get("low_rating", 0),
+                progress.get("provider"),
+                progress.get("provider_index", 0),
+                progress.get("provider_total", 0),
+                progress.get("phase"),
+                sync_run_id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return
+
+    cursor.execute(
+        """
+        UPDATE sync_runs
+        SET discovered=?, qualified=?, no_rating=?, low_rating=?,
+            current_provider=?, current_provider_index=?, provider_total=?, phase=?
+        WHERE id=?
+        """,
+        (
+            stats.get("discovered", 0),
+            stats.get("qualified", 0),
+            stats.get("no_rating", 0),
+            stats.get("low_rating", 0),
+            progress.get("provider"),
+            progress.get("provider_index", 0),
+            progress.get("provider_total", 0),
+            progress.get("phase"),
             sync_run_id,
         ),
     )
