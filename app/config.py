@@ -37,6 +37,11 @@ PROVIDERS = {
     "hulu": 15,
 }
 
+MAIN_FILTER_PROVIDERS = tuple(
+    provider_name for provider_name in PROVIDERS
+    if provider_name != "hulu"
+)
+
 CHINESE_FOCUSED_REGIONS = ("TW", "HK", "SG", "MY")
 
 DEFAULT_PROVIDER_REGIONS = {

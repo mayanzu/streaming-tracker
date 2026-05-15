@@ -10,7 +10,7 @@ from app.database import (
     get_titles,
     update_title_imdb_id,
 )
-from app.config import PROVIDERS, TMDB_API_KEY
+from app.config import MAIN_FILTER_PROVIDERS, TMDB_API_KEY
 from app.fetcher import fetch_tmdb
 from app.scheduler import get_scheduler_status
 
@@ -121,7 +121,7 @@ async def get_title(title_id: int):
 async def list_providers():
     return {
         "providers": get_providers(),
-        "available": list(PROVIDERS.keys()),
+        "available": list(MAIN_FILTER_PROVIDERS),
         "total": get_stats()["total"],
     }
 

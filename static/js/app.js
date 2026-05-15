@@ -14,6 +14,8 @@ const providerNames = {
     amazon: 'Prime Video', apple: 'Apple TV+', hulu: 'Hulu'
 };
 
+const hiddenMainFilterProviders = new Set(['hulu']);
+
 const ratingSourceNames = {
     imdb: 'IMDb',
     omdb: 'IMDb'
@@ -127,7 +129,9 @@ async function loadProviders() {
         providerCounts = {};
         data.providers.forEach(p => { providerCounts[p.provider_name] = p.count; });
 
-        const ordered = data.available.sort((a, b) => (providerCounts[b] || 0) - (providerCounts[a] || 0));
+        const availableProviders = (data.available || [])
+            .filter(key => !hiddenMainFilterProviders.has(key));
+        const ordered = availableProviders.sort((a, b) => (providerCounts[b] || 0) - (providerCounts[a] || 0));
         const total = data.total ?? Object.values(providerCounts).reduce((s, c) => s + c, 0);
 
         const container = document.getElementById('provider-filters');
