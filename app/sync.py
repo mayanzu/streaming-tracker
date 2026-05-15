@@ -18,8 +18,11 @@ from app.database import (
     count_untrusted_titles,
     create_sync_run,
     finish_sync_run,
+    get_latest_sync_run,
     init_db,
     insert_title,
+    mark_sync_run_abandoned,
+    purge_all_titles,
     purge_untrusted_titles,
     record_sync_error,
 )
@@ -35,6 +38,11 @@ _sync_state = {
     "last_result": None,
     "current_run_id": None,
 }
+BOOTSTRAP_REASONS = {
+    "empty_database_bootstrap",
+    "untrusted_rating_rebuild",
+    "incomplete_bootstrap_rebuild",
+}
 
 
 def _now_iso():
@@ -43,6 +51,14 @@ def _now_iso():
 
 def get_sync_state():
     return dict(_sync_state)
+
+
+def _is_incomplete_bootstrap(sync_run):
+    return bool(
+        sync_run
+        and sync_run.get("status") == "running"
+        and sync_run.get("reason") in BOOTSTRAP_REASONS
+    )
 
 
 async def sync_new_titles(
@@ -149,6 +165,33 @@ async def sync_new_titles(
 
 async def sync_if_empty():
     init_db()
+    latest_sync = get_latest_sync_run()
+
+    if _is_incomplete_bootstrap(latest_sync):
+        removed = purge_all_titles()
+        mark_sync_run_abandoned(
+            latest_sync.get("id"),
+            "Discarded incomplete bootstrap catalog before retry",
+        )
+        logger.warning(
+            "Discarded %s titles from incomplete bootstrap sync id=%s",
+            removed,
+            latest_sync.get("id"),
+        )
+        if not SYNC_BOOTSTRAP_ON_EMPTY:
+            logger.info("Startup bootstrap sync is disabled after incomplete cleanup")
+            return {
+                "processed": 0,
+                "skipped": removed,
+                "reason": "incomplete_bootstrap_removed_bootstrap_disabled",
+            }
+        return await sync_new_titles(
+            days_back=SYNC_BOOTSTRAP_DAYS_BACK,
+            max_pages=SYNC_BOOTSTRAP_MAX_PAGES,
+            window_days=SYNC_WINDOW_DAYS,
+            reason="incomplete_bootstrap_rebuild",
+        )
+
     trusted_total = count_titles()
     untrusted_total = count_untrusted_titles()
     if untrusted_total:

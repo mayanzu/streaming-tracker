@@ -267,6 +267,40 @@ def record_sync_error(sync_run_id, scope, message):
     conn.close()
 
 
+def get_latest_sync_run():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT *
+        FROM sync_runs
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1
+        """
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def mark_sync_run_abandoned(sync_run_id, error):
+    if not sync_run_id:
+        return
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE sync_runs
+        SET status = ?, finished_at = ?, error = ?
+        WHERE id = ? AND status = ?
+        """,
+        ("abandoned", _utc_now(), error, sync_run_id, "running"),
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_latest_finished_sync_run():
     conn = None
     try:
@@ -345,6 +379,18 @@ def purge_untrusted_titles():
     conn.commit()
     conn.close()
     return removed
+
+
+def purge_all_titles():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM titles")
+    total = cursor.fetchone()[0]
+    cursor.execute("DELETE FROM titles")
+    cursor.execute("DELETE FROM title_providers")
+    conn.commit()
+    conn.close()
+    return total
 
 
 def _build_title_filters(provider=None, title_type=None, search=None, year=None, min_rating=None):
