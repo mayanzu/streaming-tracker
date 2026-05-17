@@ -27,6 +27,9 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
 
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS titles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -259,6 +262,7 @@ def insert_title(title_data):
         raise ValueError("trusted IMDb rating is required")
 
     try:
+        cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
             "SELECT id FROM titles WHERE tmdb_id = ? AND type = ?",
             (title_data['tmdb_id'], title_data['type']),

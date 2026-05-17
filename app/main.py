@@ -1,13 +1,16 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
+
+import httpx
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import logging
 
 from app.api import router
-from app.config import STATIC_DIR
+from app.config import STATIC_DIR, TMDB_API_KEY, TMDB_BASE_URL
 from app.database import init_db
+from app.imdb_data import preload_ratings
 from app.scheduler import start_scheduler, stop_scheduler
 from app.sync import sync_if_empty
 
@@ -15,10 +18,36 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+async def _validate_api_key():
+    if not TMDB_API_KEY:
+        logger.warning("TMDB_API_KEY is not configured")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{TMDB_BASE_URL}/authentication",
+                headers={"Authorization": f"Bearer {TMDB_API_KEY}"},
+            )
+            if response.status_code == 200:
+                logger.info("TMDB API key validated successfully")
+                return True
+            logger.warning(
+                "TMDB API key validation failed: HTTP %s %s",
+                response.status_code,
+                response.text[:200],
+            )
+            return False
+    except Exception as exc:
+        logger.warning("TMDB API key validation failed: %s", exc)
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up...")
     init_db()
+    asyncio.create_task(preload_ratings())
+    asyncio.create_task(_validate_api_key())
     app.state.scheduler = start_scheduler()
     app.state.initial_sync_task = asyncio.create_task(sync_if_empty())
     yield

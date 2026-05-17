@@ -22,6 +22,9 @@ from app.config import (
 logger = logging.getLogger(__name__)
 TRUSTED_RATING_SOURCES = {"imdb", "omdb"}
 
+_translation_cache: dict[str, str] = {}
+TRANSLATION_CACHE_MAX = 5000
+
 
 def _localized_poster_path(details):
     posters = details.get("images", {}).get("posters", [])
@@ -44,14 +47,22 @@ async def translate_to_chinese(text):
     if not text:
         return text
 
+    cached = _translation_cache.get(text)
+    if cached is not None:
+        return cached
+
     try:
         result = await asyncio.to_thread(
             GoogleTranslator(source="en", target="zh-CN").translate, text[:800]
         )
-        return result if result else text
+        translated = result if result else text
     except Exception as exc:
         logger.warning("Failed to translate overview: %s", exc)
-        return text
+        translated = text
+
+    if len(_translation_cache) < TRANSLATION_CACHE_MAX:
+        _translation_cache[text] = translated
+    return translated
 
 
 async def fetch_tmdb(endpoint, params=None, retries=2, client=None):
@@ -111,7 +122,7 @@ async def get_imdb_rating(imdb_id):
     if imdb_id:
         from app.imdb_data import get_rating
 
-        rating, votes = get_rating(imdb_id)
+        rating, votes = await get_rating(imdb_id)
         if rating is not None and votes >= MIN_IMDB_VOTES:
             return rating, votes, "imdb"
 
