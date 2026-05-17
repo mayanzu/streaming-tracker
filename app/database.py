@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from app.config import DATABASE_URL, MIN_IMDB_RATING
 
@@ -21,6 +22,20 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+@contextmanager
+def get_db():
+    """上下文管理器：自动 commit/rollback/close，推荐用于简单读写场景。"""
+    conn = get_db_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -254,11 +269,16 @@ def update_title_imdb_id(title_id, imdb_id):
     conn.close()
 
 
-def insert_title(title_data):
-    conn = get_db_connection()
+def insert_title(title_data, conn=None):
+    """插入或更新作品。可传入外部连接以复用（如同步循环），不传则自建。"""
+    owns_conn = conn is None
+    if owns_conn:
+        conn = get_db_connection()
     cursor = conn.cursor()
     rating, rating_source, rating_votes = _normalize_rating_source(title_data)
     if rating is None:
+        if owns_conn:
+            conn.close()
         raise ValueError("trusted IMDb rating is required")
 
     try:
@@ -315,7 +335,8 @@ def insert_title(title_data):
         conn.rollback()
         raise
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()
 
 
 def create_sync_run(reason, days_back, max_pages, window_days):
@@ -656,7 +677,16 @@ def get_titles(page=1, limit=20, provider=None, sort_by="rating", order="desc",
     total = cursor.fetchone()[0]
     conn.close()
 
-    return {"titles": titles, "total": total, "page": page, "limit": limit}
+    import math
+    total_pages = math.ceil(total / limit) if limit > 0 else 0
+    return {
+        "titles": titles,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+    }
 
 
 def get_title_detail(title_id):

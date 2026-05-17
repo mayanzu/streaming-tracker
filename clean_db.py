@@ -1,11 +1,15 @@
 """
-清理数据库：删除 IMDb<7.0 或超过2年的作品
+清理数据库：删除 IMDb<7.0 或超过指定天数的作品
 """
 import os
 from datetime import datetime, timedelta
 
-from app.config import DATABASE_URL, MIN_IMDB_RATING
+from app.config import DATABASE_URL, MIN_IMDB_RATING, SYNC_BOOTSTRAP_DAYS_BACK
 from app.database import get_db_connection
+
+
+# 清理超过此天数的老作品，默认与 bootstrap 范围一致
+CLEANUP_DAYS_BACK = int(os.getenv("CLEANUP_DAYS_BACK", str(SYNC_BOOTSTRAP_DAYS_BACK)))
 
 
 def clean_db():
@@ -15,7 +19,7 @@ def clean_db():
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cutoff = (datetime.now() - timedelta(days=1825)).strftime("%Y-%m-%d")
+    cutoff = (datetime.now() - timedelta(days=CLEANUP_DAYS_BACK)).strftime("%Y-%m-%d")
 
     cursor.execute("SELECT COUNT(*) FROM titles")
     before = cursor.fetchone()[0]

@@ -40,6 +40,17 @@ function escapeHtml(value) {
     }[ch]));
 }
 
+function sanitizeUrl(url) {
+    if (!url) return '';
+    try {
+        const parsed = new URL(url, window.location.origin);
+        const allowed = ['image.tmdb.org', 'api.image.tmdb.org'];
+        if (allowed.includes(parsed.hostname)) return url;
+        if (url.startsWith('data:image/')) return url;
+    } catch (_) { /* invalid URL */ }
+    return '';
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     await loadSyncStatus();
     await loadProviders();
@@ -263,9 +274,12 @@ async function checkBootstrapSync() {
         </div>`;
 
         if (!bootstrapPollTimer) {
+            let pollCount = 0;
+            const POLL_MAX = 180; // 最多轮询 180 次 × 10s = 30 分钟
             bootstrapPollTimer = setInterval(async () => {
+                pollCount++;
                 const next = await loadSyncStatus();
-                if (!next?.sync?.running) {
+                if (!next?.sync?.running || pollCount >= POLL_MAX) {
                     clearInterval(bootstrapPollTimer);
                     bootstrapPollTimer = null;
                     await loadProviders();
@@ -300,7 +314,7 @@ function renderTitles(titles, clear) {
         const ratingCls = rating > 0 ? 'card-rating' : 'card-rating no-rating';
         const ratingText = rating > 0 ? rating.toFixed(1) : '—';
         const sourceText = t.rating_source ? ratingSourceNames[t.rating_source] || 'IMDb' : '';
-        const poster = t.poster_url || posterFallback;
+        const poster = sanitizeUrl(t.poster_url) || posterFallback;
         const typeLabel = t.type === 'movie' ? '电影' : '电视剧';
         const title = escapeHtml(t.title);
         const overview = escapeHtml(t.overview || '');
@@ -373,7 +387,7 @@ function renderDetail(t) {
     const ratingText = rating > 0 ? rating.toFixed(1) : '暂无评分';
     const imdbRatingText = rating > 0 ? `IMDb ${ratingText}` : 'IMDb 暂无评分';
     const votesText = t.rating_votes ? `${Number(t.rating_votes).toLocaleString()} 票` : '票数待更新';
-    const poster = t.poster_url || posterFallback;
+    const poster = sanitizeUrl(t.poster_url) || posterFallback;
     const typeLabel = t.type === 'movie' ? '电影' : '电视剧';
     const title = escapeHtml(t.title);
     const originalTitle = escapeHtml(t.original_title || '');

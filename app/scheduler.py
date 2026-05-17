@@ -75,7 +75,7 @@ def stop_scheduler(scheduler):
         logger.info("Scheduled TMDB sync stopped")
 
 
-def get_scheduler_status(scheduler):
+async def get_scheduler_status(scheduler):
     job = None
     if scheduler and scheduler.running:
         job = scheduler.get_job(JOB_ID)
@@ -97,7 +97,7 @@ def get_scheduler_status(scheduler):
         "bootstrap_on_empty": SYNC_BOOTSTRAP_ON_EMPTY,
         "bootstrap_days_back": SYNC_BOOTSTRAP_DAYS_BACK,
         "bootstrap_max_pages": SYNC_BOOTSTRAP_MAX_PAGES,
-        "sync": get_sync_state(),
+        "sync": await get_sync_state(),
         "latest_run": latest_sync,
         "latest_finished_sync": latest_finished_sync,
     }

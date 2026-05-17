@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import traceback
 from datetime import datetime, timezone
 
 from app.config import (
@@ -19,6 +20,7 @@ from app.database import (
     count_untrusted_titles,
     create_sync_run,
     finish_sync_run,
+    get_db_connection,
     get_latest_sync_run,
     init_db,
     insert_title,
@@ -32,6 +34,7 @@ from app.fetcher import empty_fetch_stats, fetch_provider_titles, merge_fetch_st
 
 logger = logging.getLogger(__name__)
 _sync_lock = asyncio.Lock()
+_state_lock = asyncio.Lock()
 _sync_state = {
     "running": False,
     "current_reason": None,
@@ -51,8 +54,10 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def get_sync_state():
-    return dict(_sync_state)
+async def get_sync_state():
+    """返回同步状态的快照副本，通过锁保证一致性。"""
+    async with _state_lock:
+        return dict(_sync_state)
 
 
 def _is_incomplete_bootstrap(sync_run):
@@ -92,16 +97,17 @@ async def sync_new_titles(
     async with _sync_lock:
         init_db()
         sync_run_id = create_sync_run(reason, days_back, max_pages, window_days)
-        _sync_state.update(
-            {
-                "running": True,
-                "current_run_id": sync_run_id,
-                "current_reason": reason,
-                "last_started_at": _now_iso(),
-                "last_finished_at": None,
-                "last_result": None,
-            }
-        )
+        async with _state_lock:
+            _sync_state.update(
+                {
+                    "running": True,
+                    "current_run_id": sync_run_id,
+                    "current_reason": reason,
+                    "last_started_at": _now_iso(),
+                    "last_finished_at": None,
+                    "last_result": None,
+                }
+            )
         result = None  # 初始化，避免 finally 中访问未定义变量
         try:
             if not TMDB_API_KEY:
@@ -136,7 +142,7 @@ async def sync_new_titles(
                 db_progress["processed"] = processed
                 db_progress["skipped"] = skipped
                 update_sync_run_progress(sync_run_id, db_progress)
-                _sync_state["last_result"] = {
+                new_last_result = {
                     "processed": processed,
                     "skipped": skipped,
                     "reason": reason,
@@ -151,64 +157,73 @@ async def sync_new_titles(
                     "no_rating": progress_stats.get("no_rating", 0),
                     "low_rating": progress_stats.get("low_rating", 0),
                 }
+                _sync_state["last_result"] = new_last_result
 
             provider_total = len(PROVIDERS)
-            for provider_index, provider_name in enumerate(PROVIDERS, start=1):
-                provider_result = await fetch_provider_titles(
-                    provider_name,
-                    days_back=days_back,
-                    max_pages=max_pages,
-                    window_days=window_days,
-                    provider_index=provider_index,
-                    provider_total=provider_total,
-                    progress_callback=report_progress,
-                )
-                merge_fetch_stats(fetch_stats, provider_result["stats"])
+            # 复用数据库连接，避免每条 insert 一次 open/close
+            db_conn = get_db_connection()
+            try:
+                for provider_index, provider_name in enumerate(PROVIDERS, start=1):
+                    provider_result = await fetch_provider_titles(
+                        provider_name,
+                        days_back=days_back,
+                        max_pages=max_pages,
+                        window_days=window_days,
+                        provider_index=provider_index,
+                        provider_total=provider_total,
+                        progress_callback=report_progress,
+                    )
+                    merge_fetch_stats(fetch_stats, provider_result["stats"])
 
-                for title in provider_result["titles"]:
-                    try:
-                        insert_title(title)
-                        processed += 1
-                    except Exception:
-                        skipped += 1
-                        logger.exception("Failed to upsert title %s", title.get("title", "?"))
-                        record_sync_error(
-                            sync_run_id,
-                            title.get("title", "?"),
-                            "failed_to_upsert",
-                        )
+                    for title in provider_result["titles"]:
+                        try:
+                            insert_title(title, conn=db_conn)
+                            processed += 1
+                        except Exception as exc:
+                            skipped += 1
+                            title_name = title.get("title", "?")
+                            error_msg = f"{type(exc).__name__}: {exc}"
+                            logger.exception("Failed to upsert title %s", title_name)
+                            record_sync_error(
+                                sync_run_id,
+                                title_name,
+                                error_msg,
+                            )
 
-                result = _result_from_stats(
-                    reason,
-                    processed,
-                    skipped,
-                    fetch_stats,
-                    {
-                        "phase": "persisted",
-                        "current_provider": provider_name,
-                        "current_provider_index": provider_index,
-                        "provider_total": provider_total,
-                    },
-                )
-                _sync_state["last_result"] = result
-                update_sync_run_progress(
-                    sync_run_id,
-                    {
-                        "phase": "persisted",
-                        "provider": provider_name,
-                        "provider_index": provider_index,
-                        "provider_total": provider_total,
-                        "processed": processed,
-                        "skipped": skipped,
-                        "stats": fetch_stats,
-                    },
-                )
-                logger.info(
-                    "TMDB provider persisted: provider=%s processed=%s discovered=%s",
-                    provider_name,
-                    processed,
-                    result["discovered"],
-                )
+                    result = _result_from_stats(
+                        reason,
+                        processed,
+                        skipped,
+                        fetch_stats,
+                        {
+                            "phase": "persisted",
+                            "current_provider": provider_name,
+                            "current_provider_index": provider_index,
+                            "provider_total": provider_total,
+                        },
+                    )
+                    async with _state_lock:
+                        _sync_state["last_result"] = result
+                    update_sync_run_progress(
+                        sync_run_id,
+                        {
+                            "phase": "persisted",
+                            "provider": provider_name,
+                            "provider_index": provider_index,
+                            "provider_total": provider_total,
+                            "processed": processed,
+                            "skipped": skipped,
+                            "stats": fetch_stats,
+                        },
+                    )
+                    logger.info(
+                        "TMDB provider persisted: provider=%s processed=%s discovered=%s",
+                        provider_name,
+                        processed,
+                        result["discovered"],
+                    )
+            finally:
+                db_conn.close()
 
             for error in fetch_stats.get("errors", []):
                 record_sync_error(sync_run_id, "fetch", error)
@@ -234,15 +249,16 @@ async def sync_new_titles(
             finish_sync_run(sync_run_id, "failed", result)
             return result
         finally:
-            _sync_state.update(
-                {
-                    "running": False,
-                    "current_run_id": None,
-                    "current_reason": None,
-                    "last_finished_at": _now_iso(),
-                    "last_result": locals().get("result"),
-                }
-            )
+            async with _state_lock:
+                _sync_state.update(
+                    {
+                        "running": False,
+                        "current_run_id": None,
+                        "current_reason": None,
+                        "last_finished_at": _now_iso(),
+                        "last_result": result,
+                    }
+                )
 
 
 async def sync_if_empty():
