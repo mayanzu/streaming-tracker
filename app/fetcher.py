@@ -67,17 +67,18 @@ async def translate_to_chinese(text):
 
 async def fetch_tmdb(endpoint, params=None, retries=2, client=None):
     request_params = dict(params or {})
-    request_params["api_key"] = TMDB_API_KEY
+    # TMDB v4 使用 Bearer Token；若使用 v3 API key，请改为查询参数方式
+    headers = {"Authorization": f"Bearer {TMDB_API_KEY}"}
     request_params.setdefault("language", "zh-CN")
 
     for attempt in range(retries + 1):
         try:
             if client:
-                response = await client.get(f"{TMDB_BASE_URL}{endpoint}", params=request_params)
+                response = await client.get(f"{TMDB_BASE_URL}{endpoint}", params=request_params, headers=headers)
             else:
                 async with httpx.AsyncClient(timeout=20) as one_off_client:
                     response = await one_off_client.get(
-                        f"{TMDB_BASE_URL}{endpoint}", params=request_params
+                        f"{TMDB_BASE_URL}{endpoint}", params=request_params, headers=headers
                     )
             response.raise_for_status()
             return response.json()

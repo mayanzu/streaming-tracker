@@ -102,6 +102,7 @@ async def sync_new_titles(
                 "last_result": None,
             }
         )
+        result = None  # 初始化，避免 finally 中访问未定义变量
         try:
             if not TMDB_API_KEY:
                 logger.warning("TMDB_API_KEY is not configured; skipping sync")

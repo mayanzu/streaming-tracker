@@ -39,6 +39,7 @@ async def ready(request: Request, response: Response):
             latest_sync = stats.get("latest_sync")
             last_update = stats.get("last_update")
         except Exception:
+            stats = None
             issues.append("database_unavailable")
     else:
         issues.append("database_unavailable")
@@ -103,17 +104,8 @@ async def get_title(title_id: int):
     if not title:
         raise HTTPException(status_code=404, detail="作品未找到")
 
-    if not title.get("imdb_id") and TMDB_API_KEY:
-        tmdb_type = "movie" if title["type"] == "movie" else "tv"
-        details = await fetch_tmdb(
-            f"/{tmdb_type}/{title['tmdb_id']}",
-            {"append_to_response": "external_ids"},
-        )
-        imdb_id = details.get("external_ids", {}).get("imdb_id")
-        if imdb_id:
-            update_title_imdb_id(title["id"], imdb_id)
-            title["imdb_id"] = imdb_id
-
+    # GET 请求不应包含写操作；imdb_id 由同步流程预填充
+    # 若缺失，可在下次同步时自动补全
     return title
 
 

@@ -21,7 +21,7 @@ DOWNLOAD_RETRIES = 3
 DOWNLOAD_RETRY_DELAY = 5  # seconds
 
 _ratings = None  # imdb_id -> (rating, votes)
-_lock = threading.Lock()
+_lock = threading.RLock()  # 使用可重入锁，支持双重检查
 
 
 def _ensure_dir():
@@ -101,12 +101,16 @@ def _load_ratings_sync(force=False):
 
 
 async def load_ratings(force=False):
-    """异步加载 IMDb 评分，首次调用时通过 asyncio.to_thread 避免阻塞事件循环。"""
+    """异步加载 IMDb 评分，使用双重检查锁避免竞态条件。"""
     with _lock:
         if _ratings is not None and not force:
             return _ratings
 
-    return await asyncio.to_thread(_load_ratings_sync, force)
+    # 释放锁后在线程中加载，避免阻塞事件循环
+    await asyncio.to_thread(_load_ratings_sync, force)
+
+    with _lock:
+        return _ratings
 
 
 async def get_rating(imdb_id):
