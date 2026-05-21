@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import traceback
 from datetime import datetime, timezone
 
 from app.config import (
@@ -95,8 +94,10 @@ async def sync_new_titles(
         return {"processed": 0, "skipped": 0, "reason": "already_running"}
 
     async with _sync_lock:
-        init_db()
-        sync_run_id = create_sync_run(reason, days_back, max_pages, window_days)
+        await asyncio.to_thread(init_db)
+        sync_run_id = await asyncio.to_thread(
+            create_sync_run, reason, days_back, max_pages, window_days,
+        )
         async with _state_lock:
             _sync_state.update(
                 {
@@ -118,7 +119,7 @@ async def sync_new_titles(
                     "reason": "missing_tmdb_api_key",
                     "error": "TMDB_API_KEY is not configured",
                 }
-                finish_sync_run(sync_run_id, "failed", result)
+                await asyncio.to_thread(finish_sync_run, sync_run_id, "failed", result)
                 return result
 
             logger.info(
@@ -131,7 +132,7 @@ async def sync_new_titles(
             processed = skipped = 0
             fetch_stats = empty_fetch_stats()
 
-            def report_progress(progress):
+            async def report_progress(progress):
                 current = progress.get("provider")
                 progress_stats = dict(fetch_stats)
                 partial_stats = progress.get("stats") or {}
@@ -141,7 +142,7 @@ async def sync_new_titles(
                 db_progress["stats"] = progress_stats
                 db_progress["processed"] = processed
                 db_progress["skipped"] = skipped
-                update_sync_run_progress(sync_run_id, db_progress)
+                await asyncio.to_thread(update_sync_run_progress, sync_run_id, db_progress)
                 new_last_result = {
                     "processed": processed,
                     "skipped": skipped,
@@ -157,11 +158,34 @@ async def sync_new_titles(
                     "no_rating": progress_stats.get("no_rating", 0),
                     "low_rating": progress_stats.get("low_rating", 0),
                 }
-                _sync_state["last_result"] = new_last_result
+                async with _state_lock:
+                    _sync_state["last_result"] = new_last_result
+
+            def _persist_titles(db_conn, titles):
+                local_processed = 0
+                local_skipped = 0
+                local_errors = []
+                db_conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for title in titles:
+                        try:
+                            insert_title(title, conn=db_conn)
+                            local_processed += 1
+                        except Exception as exc:
+                            local_skipped += 1
+                            title_name = title.get("title", "?")
+                            error_msg = f"{type(exc).__name__}: {exc}"
+                            logger.exception("Failed to upsert title %s", title_name)
+                            local_errors.append((title_name, error_msg))
+                    db_conn.commit()
+                except Exception:
+                    db_conn.rollback()
+                    raise
+                return local_processed, local_skipped, local_errors
 
             provider_total = len(PROVIDERS)
             # 复用数据库连接，避免每条 insert 一次 open/close
-            db_conn = get_db_connection()
+            db_conn = await asyncio.to_thread(get_db_connection)
             try:
                 for provider_index, provider_name in enumerate(PROVIDERS, start=1):
                     provider_result = await fetch_provider_titles(
@@ -175,20 +199,15 @@ async def sync_new_titles(
                     )
                     merge_fetch_stats(fetch_stats, provider_result["stats"])
 
-                    for title in provider_result["titles"]:
-                        try:
-                            insert_title(title, conn=db_conn)
-                            processed += 1
-                        except Exception as exc:
-                            skipped += 1
-                            title_name = title.get("title", "?")
-                            error_msg = f"{type(exc).__name__}: {exc}"
-                            logger.exception("Failed to upsert title %s", title_name)
-                            record_sync_error(
-                                sync_run_id,
-                                title_name,
-                                error_msg,
-                            )
+                    inc_processed, inc_skipped, persist_errors = await asyncio.to_thread(
+                        _persist_titles, db_conn, provider_result["titles"],
+                    )
+                    processed += inc_processed
+                    skipped += inc_skipped
+                    for title_name, error_msg in persist_errors:
+                        await asyncio.to_thread(
+                            record_sync_error, sync_run_id, title_name, error_msg,
+                        )
 
                     result = _result_from_stats(
                         reason,
@@ -204,7 +223,8 @@ async def sync_new_titles(
                     )
                     async with _state_lock:
                         _sync_state["last_result"] = result
-                    update_sync_run_progress(
+                    await asyncio.to_thread(
+                        update_sync_run_progress,
                         sync_run_id,
                         {
                             "phase": "persisted",
@@ -223,14 +243,14 @@ async def sync_new_titles(
                         result["discovered"],
                     )
             finally:
-                db_conn.close()
+                await asyncio.to_thread(db_conn.close)
 
             for error in fetch_stats.get("errors", []):
-                record_sync_error(sync_run_id, "fetch", error)
+                await asyncio.to_thread(record_sync_error, sync_run_id, "fetch", error)
 
             result = _result_from_stats(reason, processed, skipped, fetch_stats)
             status = "partial" if fetch_stats.get("errors") or skipped else "success"
-            finish_sync_run(sync_run_id, status, result)
+            await asyncio.to_thread(finish_sync_run, sync_run_id, status, result)
             logger.info(
                 "TMDB sync finished: processed=%s skipped=%s discovered=%s",
                 processed,
@@ -246,9 +266,14 @@ async def sync_new_titles(
                 "reason": "sync_failed",
                 "error": str(exc),
             }
-            finish_sync_run(sync_run_id, "failed", result)
+            await asyncio.to_thread(finish_sync_run, sync_run_id, "failed", result)
             return result
         finally:
+            try:
+                from app.imdb_data import clear_ratings
+                clear_ratings()
+            except Exception:
+                logger.exception("Failed to clear IMDb ratings memory")
             async with _state_lock:
                 _sync_state.update(
                     {
@@ -262,12 +287,13 @@ async def sync_new_titles(
 
 
 async def sync_if_empty():
-    init_db()
-    latest_sync = get_latest_sync_run()
+    await asyncio.to_thread(init_db)
+    latest_sync = await asyncio.to_thread(get_latest_sync_run)
 
     if _is_incomplete_bootstrap(latest_sync):
-        removed = purge_all_titles()
-        mark_sync_run_abandoned(
+        removed = await asyncio.to_thread(purge_all_titles)
+        await asyncio.to_thread(
+            mark_sync_run_abandoned,
             latest_sync.get("id"),
             "Discarded incomplete bootstrap catalog before retry",
         )
@@ -290,10 +316,10 @@ async def sync_if_empty():
             reason="incomplete_bootstrap_rebuild",
         )
 
-    trusted_total = count_titles()
-    untrusted_total = count_untrusted_titles()
+    trusted_total = await asyncio.to_thread(count_titles)
+    untrusted_total = await asyncio.to_thread(count_untrusted_titles)
     if untrusted_total:
-        removed = purge_untrusted_titles()
+        removed = await asyncio.to_thread(purge_untrusted_titles)
         logger.warning(
             "Removed %s titles without trusted IMDb ratings before bootstrap check",
             removed,

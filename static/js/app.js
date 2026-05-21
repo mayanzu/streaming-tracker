@@ -10,7 +10,7 @@ const providerColors = {
 };
 
 const providerNames = {
-    netflix: 'Netflix', disney: 'Disney+', max: 'Max', hbo: 'Max',
+    netflix: 'Netflix', disney: 'Disney+', max: 'Max',
     amazon: 'Prime Video', apple: 'Apple TV+', hulu: 'Hulu'
 };
 
@@ -279,12 +279,18 @@ async function checkBootstrapSync() {
             bootstrapPollTimer = setInterval(async () => {
                 pollCount++;
                 const next = await loadSyncStatus();
-                if (!next?.sync?.running || pollCount >= POLL_MAX) {
+                const stillRunning = next?.sync?.running;
+                if (!stillRunning) {
                     clearInterval(bootstrapPollTimer);
                     bootstrapPollTimer = null;
                     await loadProviders();
                     await loadYears();
                     resetAndLoad();
+                } else if (pollCount >= POLL_MAX) {
+                    clearInterval(bootstrapPollTimer);
+                    bootstrapPollTimer = null;
+                    document.getElementById('stats-info').textContent =
+                        '同步仍在后台进行，请稍后手动刷新页面';
                 }
             }, 10000);
         }

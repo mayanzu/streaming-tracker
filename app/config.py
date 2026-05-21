@@ -72,6 +72,7 @@ MIN_IMDB_RATING = float(os.getenv("MIN_IMDB_RATING", "7.0"))
 MIN_IMDB_VOTES = int(os.getenv("MIN_IMDB_VOTES", "50"))
 OMDB_MIN_VOTES = int(os.getenv("OMDB_MIN_VOTES", "100"))
 ENRICH_CONCURRENCY = int(os.getenv("ENRICH_CONCURRENCY", "30"))
+DISCOVER_CONCURRENCY = int(os.getenv("DISCOVER_CONCURRENCY", "10"))
 
 # 本地同步上传目标。示例：root@192.168.1.2:/app/data/tracker.db
 ROUTER_TARGET = os.getenv("ROUTER_TARGET", "")

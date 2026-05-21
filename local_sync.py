@@ -18,12 +18,18 @@ def upload_database():
         print("未配置 ROUTER_TARGET，跳过上传")
         return
 
-    result = subprocess.run(
-        ["scp", DATABASE_URL, ROUTER_TARGET],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["scp", DATABASE_URL, ROUTER_TARGET],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        print("上传超时（5 分钟），已放弃")
+        return
+
     if result.returncode == 0:
         print(f"数据库已上传到 {ROUTER_TARGET}")
     else:

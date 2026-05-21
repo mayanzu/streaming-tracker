@@ -10,7 +10,7 @@ import logging
 from app.api import router
 from app.config import STATIC_DIR, TMDB_API_KEY, TMDB_BASE_URL
 from app.database import init_db
-from app.imdb_data import preload_ratings
+
 from app.scheduler import start_scheduler, stop_scheduler
 from app.sync import sync_if_empty
 
@@ -24,10 +24,16 @@ async def _validate_api_key():
         return False
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(
-                f"{TMDB_BASE_URL}/authentication",
-                headers={"Authorization": f"Bearer {TMDB_API_KEY}"},
-            )
+            if len(TMDB_API_KEY) == 32:
+                response = await client.get(
+                    f"{TMDB_BASE_URL}/configuration",
+                    params={"api_key": TMDB_API_KEY},
+                )
+            else:
+                response = await client.get(
+                    f"{TMDB_BASE_URL}/authentication",
+                    headers={"Authorization": f"Bearer {TMDB_API_KEY}"},
+                )
             if response.status_code == 200:
                 logger.info("TMDB API key validated successfully")
                 return True
@@ -46,7 +52,6 @@ async def _validate_api_key():
 async def lifespan(app: FastAPI):
     logger.info("Starting up...")
     init_db()
-    asyncio.create_task(preload_ratings())
     asyncio.create_task(_validate_api_key())
     app.state.scheduler = start_scheduler()
     app.state.initial_sync_task = asyncio.create_task(sync_if_empty())
@@ -70,8 +75,5 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 async def root():
     return FileResponse(
         str(STATIC_DIR / "index.html"),
-        headers={
-            "Cache-Control": "no-store",
-            "Clear-Site-Data": '"cache"',
-        },
+        headers={"Cache-Control": "no-cache"},
     )

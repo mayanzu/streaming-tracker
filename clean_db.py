@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timedelta
 
 from app.config import DATABASE_URL, MIN_IMDB_RATING, SYNC_BOOTSTRAP_DAYS_BACK
-from app.database import get_db_connection
+from app.database import get_db
 
 
 # 清理超过此天数的老作品，默认与 bootstrap 范围一致
@@ -17,44 +17,40 @@ def clean_db():
         print("数据库不存在")
         return
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
     cutoff = (datetime.now() - timedelta(days=CLEANUP_DAYS_BACK)).strftime("%Y-%m-%d")
 
-    cursor.execute("SELECT COUNT(*) FROM titles")
-    before = cursor.fetchone()[0]
+    with get_db() as conn:
+        cursor = conn.cursor()
 
-    # 统计
-    cursor.execute("SELECT COUNT(*) FROM titles WHERE imdb_rating IS NULL")
-    no_rating = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM titles WHERE imdb_rating < ?", (MIN_IMDB_RATING,))
-    low_rating = cursor.fetchone()[0]
-    cursor.execute(
-        "SELECT COUNT(*) FROM titles WHERE rating_source IS NULL OR rating_source NOT IN ('imdb', 'omdb')"
-    )
-    untrusted = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM titles WHERE release_date < ?", (cutoff,))
-    old = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM titles")
+        before = cursor.fetchone()[0]
 
-    # 删除
-    cursor.execute("""
-        DELETE FROM titles WHERE
-            imdb_rating IS NULL
-            OR imdb_rating < ?
-            OR rating_source IS NULL
-            OR rating_source NOT IN ('imdb', 'omdb')
-            OR release_date < ?
-    """, (MIN_IMDB_RATING, cutoff))
+        cursor.execute("SELECT COUNT(*) FROM titles WHERE imdb_rating IS NULL")
+        no_rating = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM titles WHERE imdb_rating < ?", (MIN_IMDB_RATING,))
+        low_rating = cursor.fetchone()[0]
+        cursor.execute(
+            "SELECT COUNT(*) FROM titles WHERE rating_source IS NULL OR rating_source NOT IN ('imdb', 'omdb')"
+        )
+        untrusted = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM titles WHERE release_date < ?", (cutoff,))
+        old = cursor.fetchone()[0]
 
-    cursor.execute("""
-        DELETE FROM title_providers WHERE title_id NOT IN (SELECT id FROM titles)
-    """)
+        cursor.execute("""
+            DELETE FROM titles WHERE
+                imdb_rating IS NULL
+                OR imdb_rating < ?
+                OR rating_source IS NULL
+                OR rating_source NOT IN ('imdb', 'omdb')
+                OR release_date < ?
+        """, (MIN_IMDB_RATING, cutoff))
 
-    cursor.execute("SELECT COUNT(*) FROM titles")
-    after = cursor.fetchone()[0]
+        cursor.execute("""
+            DELETE FROM title_providers WHERE title_id NOT IN (SELECT id FROM titles)
+        """)
 
-    conn.commit()
-    conn.close()
+        cursor.execute("SELECT COUNT(*) FROM titles")
+        after = cursor.fetchone()[0]
 
     print(f"清理完成：")
     print(f"  清理前: {before} 部")

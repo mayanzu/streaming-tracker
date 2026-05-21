@@ -28,6 +28,7 @@ daemon*.json
 
 # Local agent/tool state
 .claude/
+.workbuddy/
 
 # IDE
 .vscode/

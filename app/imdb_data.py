@@ -35,7 +35,13 @@ def _download():
     for attempt in range(1, DOWNLOAD_RETRIES + 1):
         try:
             logger.info("Downloading IMDb dataset (attempt %s/%s)...", attempt, DOWNLOAD_RETRIES)
-            urllib.request.urlretrieve(DATASET_URL, str(gz_path))
+            import httpx
+            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                with client.stream("GET", DATASET_URL) as r:
+                    r.raise_for_status()
+                    with open(gz_path, "wb") as f:
+                        for chunk in r.iter_bytes(chunk_size=8192):
+                            f.write(chunk)
             with gzip.open(gz_path, "rb") as f_in:
                 with open(CACHE_FILE, "wb") as f_out:
                     f_out.write(f_in.read())
@@ -90,8 +96,11 @@ def _load_ratings_sync(force=False):
                 parts = line.strip().split("\t")
                 if len(parts) >= 3:
                     imdb_id = parts[0]
-                    rating = float(parts[1])
-                    votes = int(parts[2])
+                    try:
+                        rating = float(parts[1])
+                        votes = int(parts[2])
+                    except (ValueError, TypeError):
+                        continue
                     ratings[imdb_id] = (rating, votes)
 
         _ratings = ratings
@@ -126,3 +135,15 @@ async def preload_ratings():
         await load_ratings()
     except Exception:
         logger.exception("Failed to preload IMDb ratings, will retry on first request")
+
+
+def clear_ratings():
+    """清除内存中的 IMDb 评分数据，释放内存。"""
+    global _ratings
+    with _lock:
+        if _ratings is not None:
+            _ratings = None
+            logger.info("IMDb ratings cache cleared from memory")
+            import gc
+            gc.collect()
+

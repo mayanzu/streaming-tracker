@@ -1,6 +1,6 @@
-from datetime import date, datetime
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Query, HTTPException, Request, Response
+from fastapi import APIRouter, Query, HTTPException, Request, Response, BackgroundTasks
 
 from app.database import (
     check_database,
@@ -8,11 +8,10 @@ from app.database import (
     get_stats,
     get_title_detail,
     get_titles,
-    update_title_imdb_id,
 )
 from app.config import MAIN_FILTER_PROVIDERS, TMDB_API_KEY
-from app.fetcher import fetch_tmdb
 from app.scheduler import get_scheduler_status
+from app.sync import get_sync_state, sync_new_titles
 
 router = APIRouter()
 
@@ -29,7 +28,7 @@ async def ready(request: Request, response: Response):
     latest_sync = None
     last_update = None
     try:
-        scheduler = get_scheduler_status(getattr(request.app.state, "scheduler", None))
+        scheduler = await get_scheduler_status(getattr(request.app.state, "scheduler", None))
     except Exception:
         scheduler = {"sync": {}}
 
@@ -56,7 +55,10 @@ async def ready(request: Request, response: Response):
 
     if last_update:
         try:
-            age_days = (date.today() - datetime.fromisoformat(last_update).date()).days
+            last_update_dt = datetime.fromisoformat(last_update)
+            if last_update_dt.tzinfo is None:
+                last_update_dt = last_update_dt.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - last_update_dt).days
             if age_days > 7:
                 issues.append("stale_data")
         except ValueError:
@@ -125,4 +127,17 @@ async def stats():
 
 @router.get("/api/sync/status")
 async def sync_status(request: Request):
-    return get_scheduler_status(getattr(request.app.state, "scheduler", None))
+    return await get_scheduler_status(getattr(request.app.state, "scheduler", None))
+
+
+@router.post("/api/sync")
+async def trigger_sync(background_tasks: BackgroundTasks):
+    state = await get_sync_state()
+    if state.get("running"):
+        raise HTTPException(status_code=400, detail="同步任务已经在运行中")
+
+    background_tasks.add_task(
+        sync_new_titles,
+        reason="manual",
+    )
+    return {"status": "started"}

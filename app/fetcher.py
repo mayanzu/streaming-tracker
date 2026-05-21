@@ -1,12 +1,14 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 import httpx
 from deep_translator import GoogleTranslator
 
 from app.config import (
     DEFAULT_PROVIDER_REGIONS,
+    DISCOVER_CONCURRENCY,
     ENRICH_CONCURRENCY,
     MIN_IMDB_RATING,
     MIN_IMDB_VOTES,
@@ -22,19 +24,39 @@ from app.config import (
 logger = logging.getLogger(__name__)
 TRUSTED_RATING_SOURCES = {"imdb", "omdb"}
 
-_translation_cache: dict[str, str] = {}
-TRANSLATION_CACHE_MAX = 5000
+
+@lru_cache(maxsize=5000)
+def _translate_cached(text: str) -> str:
+    """同步翻译（内部使用，通过 asyncio.to_thread 调用）。"""
+    try:
+        result = GoogleTranslator(source="en", target="zh-CN").translate(text[:800])
+        return result if result else text
+    except Exception:
+        return text
 
 
 def _localized_poster_path(details):
-    posters = details.get("images", {}).get("posters", [])
+    images = details.get("images") or {}
+    posters = images.get("posters") or []
     if not posters:
         return details.get("poster_path")
 
-    for language in ("zh", "zh-CN", "zh-TW", "zh-HK", None, "en"):
-        for poster in posters:
-            if poster.get("iso_639_1") == language and poster.get("file_path"):
-                return poster["file_path"]
+    def best_in(language):
+        candidates = [
+            p for p in posters
+            if p.get("iso_639_1") == language and p.get("file_path")
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda p: p.get("vote_average") or 0, reverse=True)
+        return candidates[0]["file_path"]
+
+    # TMDB iso_639_1 是 ISO 639-1 两字母代码（zh / en / null），
+    # 没有 zh-CN / zh-TW 这种区域后缀；按 zh -> null -> en 优先级，每档内挑投票最高的
+    for language in ("zh", None, "en"):
+        path = best_in(language)
+        if path:
+            return path
 
     return details.get("poster_path") or posters[0].get("file_path")
 
@@ -47,28 +69,20 @@ async def translate_to_chinese(text):
     if not text:
         return text
 
-    cached = _translation_cache.get(text)
-    if cached is not None:
-        return cached
-
     try:
-        result = await asyncio.to_thread(
-            GoogleTranslator(source="en", target="zh-CN").translate, text[:800]
-        )
-        translated = result if result else text
+        return await asyncio.to_thread(_translate_cached, text[:800])
     except Exception as exc:
         logger.warning("Failed to translate overview: %s", exc)
-        translated = text
-
-    if len(_translation_cache) < TRANSLATION_CACHE_MAX:
-        _translation_cache[text] = translated
-    return translated
+        return text
 
 
 async def fetch_tmdb(endpoint, params=None, retries=2, client=None):
     request_params = dict(params or {})
-    # TMDB v4 使用 Bearer Token；若使用 v3 API key，请改为查询参数方式
-    headers = {"Authorization": f"Bearer {TMDB_API_KEY}"}
+    headers = {}
+    if len(TMDB_API_KEY) == 32:
+        request_params["api_key"] = TMDB_API_KEY
+    else:
+        headers["Authorization"] = f"Bearer {TMDB_API_KEY}"
     request_params.setdefault("language", "zh-CN")
 
     for attempt in range(retries + 1):
@@ -120,12 +134,11 @@ async def get_imdb_rating(imdb_id):
     if not imdb_id:
         return None, 0, None
 
-    if imdb_id:
-        from app.imdb_data import get_rating
+    from app.imdb_data import get_rating
 
-        rating, votes = await get_rating(imdb_id)
-        if rating is not None and votes >= MIN_IMDB_VOTES:
-            return rating, votes, "imdb"
+    rating, votes = await get_rating(imdb_id)
+    if rating is not None and votes >= MIN_IMDB_VOTES:
+        return rating, votes, "imdb"
 
     rating, votes = await fetch_omdb(imdb_id)
     if rating is not None and votes >= OMDB_MIN_VOTES:
@@ -149,7 +162,11 @@ def _discover_date_ranges(days_back, window_days):
 
 
 async def fetch_new_releases(provider_name, days_back=1825, max_pages=29, window_days=90, client=None):
-    """获取平台新片，不在 discover 阶段按评分过滤。"""
+    """获取平台新片，不在 discover 阶段按评分过滤。
+
+    region × media_type × window 维度并行（受 DISCOVER_CONCURRENCY 限制），page 仍串行
+    （依赖 total_pages 早停）。
+    """
     if provider_name not in PROVIDERS:
         raise ValueError(f"Unknown provider: {provider_name}")
     if not TMDB_API_KEY:
@@ -159,60 +176,79 @@ async def fetch_new_releases(provider_name, days_back=1825, max_pages=29, window
     regions = PROVIDER_REGIONS.get(provider_name) or DEFAULT_PROVIDER_REGIONS.get(provider_name, ())
     added_date = datetime.now().strftime("%Y-%m-%d")
     results = {}
+    sem = asyncio.Semaphore(DISCOVER_CONCURRENCY)
 
+    media_specs = (
+        ("movie", "primary_release_date", "primary_release_date.desc"),
+        ("tv", "first_air_date", "first_air_date.desc"),
+    )
+
+    async def fetch_window(region, media_type, date_field, sort_field, window_start, window_end):
+        local_results = []
+        for page in range(1, max_pages + 1):
+            params = {
+                "watch_region": region,
+                "with_watch_providers": provider_id,
+                "watch_monetization_types": "flatrate",
+                "sort_by": sort_field,
+                f"{date_field}.gte": window_start,
+                "page": page,
+            }
+            if window_end:
+                params[f"{date_field}.lte"] = window_end
+
+            async with sem:
+                data = await fetch_tmdb(
+                    f"/discover/{media_type}",
+                    params,
+                    client=client,
+                )
+            page_results = data.get("results", [])
+            if not page_results:
+                break
+
+            for item in page_results:
+                if not item.get("poster_path"):
+                    continue
+                poster_path = item.get("poster_path")
+                local_results.append({
+                    "tmdb_id": item["id"],
+                    "title": item.get("title") or item.get("name", ""),
+                    "original_title": item.get("original_title")
+                    or item.get("original_name", ""),
+                    "type": media_type,
+                    "overview": item.get("overview", ""),
+                    "release_date": item.get("release_date")
+                    or item.get("first_air_date", ""),
+                    "poster_url": _poster_url(poster_path),
+                    "imdb_rating": None,
+                    "rating_source": None,
+                    "rating_votes": None,
+                    "added_date": added_date,
+                    "providers": [provider_name],
+                })
+
+            total_pages = min(data.get("total_pages", page) or page, max_pages)
+            if page >= total_pages:
+                break
+        return local_results
+
+    tasks = []
     for region in regions:
-        for media_type, date_field, sort_field in [
-            ("movie", "primary_release_date", "primary_release_date.desc"),
-            ("tv", "first_air_date", "first_air_date.desc"),
-        ]:
+        for media_type, date_field, sort_field in media_specs:
             for window_start, window_end in _discover_date_ranges(days_back, window_days):
-                for page in range(1, max_pages + 1):
-                    params = {
-                        "watch_region": region,
-                        "with_watch_providers": provider_id,
-                        "watch_monetization_types": "flatrate",
-                        "sort_by": sort_field,
-                        f"{date_field}.gte": window_start,
-                        "page": page,
-                    }
-                    if window_end:
-                        params[f"{date_field}.lte"] = window_end
+                tasks.append(fetch_window(
+                    region, media_type, date_field, sort_field, window_start, window_end,
+                ))
 
-                    data = await fetch_tmdb(
-                        f"/discover/{media_type}",
-                        params,
-                        client=client,
-                    )
-                    page_results = data.get("results", [])
-                    if not page_results:
-                        break
-
-                    for item in page_results:
-                        if not item.get("poster_path"):
-                            continue
-
-                        key = (media_type, item["id"])
-                        poster_path = item.get("poster_path")
-                        results[key] = {
-                            "tmdb_id": item["id"],
-                            "title": item.get("title") or item.get("name", ""),
-                            "original_title": item.get("original_title")
-                            or item.get("original_name", ""),
-                            "type": media_type,
-                            "overview": item.get("overview", ""),
-                            "release_date": item.get("release_date")
-                            or item.get("first_air_date", ""),
-                            "poster_url": _poster_url(poster_path),
-                            "imdb_rating": None,
-                            "rating_source": None,
-                            "rating_votes": None,
-                            "added_date": added_date,
-                            "providers": [provider_name],
-                        }
-
-                    total_pages = min(data.get("total_pages", page) or page, max_pages)
-                    if page >= total_pages:
-                        break
+    window_results = await asyncio.gather(*tasks, return_exceptions=True)
+    for items in window_results:
+        if isinstance(items, Exception):
+            logger.warning("Discover window failed: %s", items)
+            continue
+        for item in items:
+            key = (item["type"], item["tmdb_id"])
+            results[key] = item
 
     return list(results.values())
 
