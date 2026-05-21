@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import asyncio
+
 from fastapi import APIRouter, Query, HTTPException, Request, Response, BackgroundTasks
 
 from app.database import (
@@ -9,7 +11,7 @@ from app.database import (
     get_title_detail,
     get_titles,
 )
-from app.config import MAIN_FILTER_PROVIDERS, TMDB_API_KEY
+from app.config import MAIN_FILTER_PROVIDERS, SYNC_ENABLED, TMDB_API_KEY
 from app.scheduler import get_scheduler_status
 from app.sync import get_sync_state, sync_new_titles
 
@@ -32,9 +34,10 @@ async def ready(request: Request, response: Response):
     except Exception:
         scheduler = {"sync": {}}
 
-    if check_database():
+    db_ok = await asyncio.to_thread(check_database)
+    if db_ok:
         try:
-            stats = get_stats()
+            stats = await asyncio.to_thread(get_stats)
             latest_sync = stats.get("latest_sync")
             last_update = stats.get("last_update")
         except Exception:
@@ -43,7 +46,7 @@ async def ready(request: Request, response: Response):
     else:
         issues.append("database_unavailable")
 
-    if not TMDB_API_KEY:
+    if SYNC_ENABLED and not TMDB_API_KEY:
         issues.append("missing_tmdb_api_key")
     if scheduler.get("sync", {}).get("running"):
         issues.append("sync_running")
@@ -81,8 +84,11 @@ async def ready(request: Request, response: Response):
     }
 
 
+# 读路径用 def 让 FastAPI 自动包 threadpool，避免同步 SQLite 调用阻塞事件循环；
+# 弱 ARM 单 worker 场景下这是最大并发瓶颈。
+
 @router.get("/api/titles")
-async def list_titles(
+def list_titles(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
     provider: str = Query(None),
@@ -101,18 +107,15 @@ async def list_titles(
 
 
 @router.get("/api/titles/{title_id}")
-async def get_title(title_id: int):
+def get_title(title_id: int):
     title = get_title_detail(title_id)
     if not title:
         raise HTTPException(status_code=404, detail="作品未找到")
-
-    # GET 请求不应包含写操作；imdb_id 由同步流程预填充
-    # 若缺失，可在下次同步时自动补全
     return title
 
 
 @router.get("/api/providers")
-async def list_providers():
+def list_providers():
     return {
         "providers": get_providers(),
         "available": list(MAIN_FILTER_PROVIDERS),
@@ -121,7 +124,7 @@ async def list_providers():
 
 
 @router.get("/api/stats")
-async def stats():
+def stats():
     return get_stats()
 
 
@@ -132,6 +135,11 @@ async def sync_status(request: Request):
 
 @router.post("/api/sync")
 async def trigger_sync(background_tasks: BackgroundTasks):
+    if not SYNC_ENABLED:
+        raise HTTPException(status_code=403, detail="同步已在部署中禁用（SYNC_ENABLED=false）")
+    if not TMDB_API_KEY:
+        raise HTTPException(status_code=400, detail="未配置 TMDB_API_KEY，无法触发同步")
+
     state = await get_sync_state()
     if state.get("running"):
         raise HTTPException(status_code=400, detail="同步任务已经在运行中")

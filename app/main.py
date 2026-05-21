@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 import logging
 
 from app.api import router
-from app.config import STATIC_DIR, TMDB_API_KEY, TMDB_BASE_URL
+from app.config import STATIC_DIR, SYNC_ENABLED, TMDB_API_KEY, TMDB_BASE_URL
 from app.database import init_db
 
 from app.scheduler import start_scheduler, stop_scheduler
@@ -52,7 +52,10 @@ async def _validate_api_key():
 async def lifespan(app: FastAPI):
     logger.info("Starting up...")
     init_db()
-    asyncio.create_task(_validate_api_key())
+    # 路由器场景 SYNC_ENABLED=false 时跳过对 api.themoviedb.org 的启动校验，
+    # 避免无外网 / 无 key 时浪费一次 10s HTTPS 超时
+    if SYNC_ENABLED:
+        asyncio.create_task(_validate_api_key())
     app.state.scheduler = start_scheduler()
     app.state.initial_sync_task = asyncio.create_task(sync_if_empty())
     yield

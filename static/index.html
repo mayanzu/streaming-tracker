@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0a0a0e">
     <title>Streaming Tracker</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=14">
+    <link rel="stylesheet" href="/static/css/style.css?v=15">
 </head>
 <body>
 
@@ -56,6 +56,8 @@
         <span id="sync-info"></span>
     </div>
 
+    <div class="active-filters hidden" id="active-filters" aria-label="已应用的筛选条件"></div>
+
     <div class="content-area">
         <div class="titles-grid" id="titles-grid"></div>
         <div id="scroll-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
@@ -68,15 +70,19 @@
         </div>
     </div>
 
+    <button id="back-to-top" type="button" aria-label="返回顶部" title="返回顶部">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+    </button>
+
     <div id="detail-modal" class="modal-overlay hidden">
         <div class="modal-panel">
             <button class="modal-close" id="close-modal" aria-label="关闭详情">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
-            <div class="modal-body" id="detail-content"></div>
+            <div id="detail-content"></div>
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=14"></script>
+    <script src="/static/js/app.js?v=15"></script>
 </body>
 </html>

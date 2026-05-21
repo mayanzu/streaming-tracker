@@ -28,6 +28,13 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
+    # 弱 ARM + 慢 USB 优化：扩 cache、开 mmap、临时表入内存
+    conn.execute("PRAGMA cache_size = -4000")    # 4MB page cache（默认 2MB）
+    conn.execute("PRAGMA mmap_size = 10485760")  # 10MB mmap，减少 read() 系统调用
+    conn.execute("PRAGMA temp_store = MEMORY")
+    # WAL 模式下 synchronous=NORMAL 是 SQLite 官方推荐（不丢已 commit 数据，
+    # 仅 OS 崩溃时可能丢最后一个 WAL 段；exFAT 上 FULL 反而引入大量 fsync 浪费 I/O）
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 

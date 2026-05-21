@@ -26,3 +26,12 @@ services:
       - SYNC_BOOTSTRAP_DAYS_BACK=${SYNC_BOOTSTRAP_DAYS_BACK:-1825}
       - SYNC_BOOTSTRAP_MAX_PAGES=${SYNC_BOOTSTRAP_MAX_PAGES:-29}
     restart: unless-stopped
+    # 弱 ARM 软路由限额：防止异常分支抢光 2GB 内存（无 swap）
+    mem_limit: 768m
+    mem_reservation: 256m
+    cpus: 2
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
