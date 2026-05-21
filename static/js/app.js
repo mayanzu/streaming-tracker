@@ -93,6 +93,14 @@ function renderSyncStatus(status) {
     const el = document.getElementById('sync-info');
     if (!el) return;
 
+    // SYNC_ENABLED=false 时（如路由器只读部署），同步在本地脚本跑，
+    // 前端不应 surface 任何同步状态（包括历史 failed 记录）
+    if (status.enabled === false) {
+        el.textContent = '';
+        el.className = '';
+        return;
+    }
+
     const sync = status.sync || {};
     const latestFinished = status.latest_finished_sync || {};
     const last = sync.last_result || latestFinished || {};
