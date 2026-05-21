@@ -592,7 +592,7 @@ header {
 /* ---- Modal hero (backdrop + 大标题 + 大评分) ---- */
 .modal-hero {
     position: relative;
-    height: 180px;
+    height: 160px;
     overflow: hidden;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     background: var(--bg-tertiary);
@@ -687,10 +687,10 @@ header {
     border-radius: var(--radius-md);
     overflow: hidden;
     box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
-    margin-top: -68px;
+    margin-top: 0;
     position: relative;
     z-index: 3;
-    align-self: flex-start;
+    align-self: center;
 }
 .modal-poster img { width: 100%; display: block; }
 
@@ -803,10 +803,11 @@ header {
         animation: modalPop 320ms cubic-bezier(0.4, 0, 0.2, 1);
     }
     .modal-hero { border-radius: var(--radius-lg) var(--radius-lg) 0 0; height: 200px; }
-    .modal-hero-content { left: 24px; bottom: 18px; right: 72px; }
+    /* ≥600 海报突入 hero，hero-content 左边距避让 (24 padding + 140 poster + 16 gap) */
+    .modal-hero-content { left: 180px; bottom: 18px; right: 72px; }
     .modal-hero-title h2 { font-size: 1.45rem; }
     .modal-body { padding: 24px; gap: 22px; }
-    .modal-poster { width: 140px; margin-top: -76px; }
+    .modal-poster { width: 140px; margin-top: -76px; align-self: flex-start; }
 }
 
 /* ============================================
@@ -855,8 +856,9 @@ header {
         max-height: 92vh;
     }
     .modal-hero { height: 240px; }
+    /* ≥900 海报突入 hero，hero-content 左边距避让 (36 padding + 160 poster + 24 gap) */
     .modal-hero-content {
-        left: 32px;
+        left: 220px;
         bottom: 24px;
         right: 80px;
         gap: 18px;
@@ -934,7 +936,8 @@ header {
 
     .modal-panel { max-width: 920px; }
     .modal-hero { height: 280px; }
-    .modal-hero-content { left: 40px; bottom: 28px; right: 88px; gap: 22px; }
+    /* ≥1200 海报突入 hero，hero-content 左边距避让 (44 padding + 180 poster + 32 gap) */
+    .modal-hero-content { left: 256px; bottom: 28px; right: 88px; gap: 22px; }
     .modal-hero-rating .rating-num { font-size: 3.4rem; }
     .modal-hero-title h2 { font-size: 1.95rem; }
     .modal-body { padding: 32px 44px 44px; grid-template-columns: 180px 1fr; gap: 32px; }
