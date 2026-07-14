@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import re
 
 import httpx
 from fastapi import FastAPI
@@ -14,7 +15,29 @@ from app.database import init_db
 from app.scheduler import start_scheduler, stop_scheduler
 from app.sync import sync_if_empty
 
+class SecretRedactionFilter(logging.Filter):
+    """Prevent credentials in URLs/headers from reaching any configured log sink."""
+
+    _patterns = (
+        re.compile(r"(?i)([?&](?:api_?key|apikey)=)[^&\s]+"),
+        re.compile(r"(?i)(authorization[=:]\s*bearer\s+)[^,;\s]+"),
+        re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+"),
+    )
+
+    def filter(self, record):
+        message = record.getMessage()
+        for pattern in self._patterns:
+            message = pattern.sub(r"\1[REDACTED]", message)
+        record.msg = message
+        record.args = ()
+        return True
+
+
 logging.basicConfig(level=logging.INFO)
+for handler in logging.getLogger().handlers:
+    handler.addFilter(SecretRedactionFilter())
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

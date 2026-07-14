@@ -2,87 +2,143 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#0a0a0e">
-    <title>Streaming Tracker</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=17">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#11110f">
+    <meta name="description" content="聚合海外流媒体高分新片，建立你的个人观影清单。">
+    <title>片流 · 高分流媒体片单</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=18">
 </head>
 <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
 
-    <header>
+    <div id="offline-banner" class="offline-banner hidden" role="status">
+        当前处于离线状态，已加载内容仍可浏览
+    </div>
+
+    <header class="app-header">
         <div class="header-inner">
-            <div class="header-left">
-                <span class="logo-dot"></span>
-                <h1>Streaming Tracker</h1>
-            </div>
-            <div class="search-wrap">
-                <input type="text" id="search-input" placeholder="搜索作品...">
-                <span class="search-icon">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <a class="brand" href="/" aria-label="片流首页">
+                <span class="brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none"><path d="M5 4.5h14v15H5z"/><path d="M9.5 8.5l6 3.5-6 3.5z"/></svg>
                 </span>
-            </div>
-        </div>
-        <div class="filter-bar" id="filter-bar">
-            <div class="filter-row filter-row-primary">
-                <div class="filter-group" id="provider-filters"></div>
-            </div>
-            <div class="filter-row filter-row-secondary">
-                <div class="filter-group" id="type-filters">
-                    <button class="filter-btn active" data-type="">全部</button>
-                    <button class="filter-btn" data-type="movie">电影</button>
-                    <button class="filter-btn" data-type="tv">电视剧</button>
-                </div>
-                <span class="filter-divider"></span>
-                <div class="filter-group" id="sort-filters">
-                    <button class="filter-btn active" data-sort="rating">评分最高</button>
-                    <button class="filter-btn" data-sort="release_date">最新上映</button>
-                </div>
-                <span class="filter-divider"></span>
-                <select class="filter-select" id="year-filter">
-                    <option value="">全部年份</option>
-                </select>
-                <select class="filter-select" id="rating-filter">
-                    <option value="0">全部分数</option>
-                    <option value="8">8.0 以上</option>
-                    <option value="7.5">7.5 以上</option>
-                    <option value="7">7.0 以上</option>
-                </select>
+                <span><strong>片流</strong><small>STREAM INDEX</small></span>
+            </a>
+
+            <div class="header-tools">
+                <label class="search-wrap" for="search-input">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg>
+                    <input type="search" id="search-input" placeholder="搜索片名" autocomplete="off" aria-keyshortcuts="/">
+                    <kbd aria-hidden="true">/</kbd>
+                    <button id="clear-search" class="clear-search hidden" type="button" aria-label="清除搜索">
+                        <svg viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10M17 7 7 17"/></svg>
+                    </button>
+                </label>
+                <button id="sync-button" class="sync-button hidden" type="button">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.8-2L20 9M4 15l2.1 2a7 7 0 0 0 11.8-2"/></svg>
+                    <span>同步数据</span>
+                </button>
             </div>
         </div>
     </header>
 
-    <div class="stats-bar" aria-live="polite">
-        <span id="stats-info">加载中...</span>
-        <span id="sync-info"></span>
-    </div>
+    <main id="main-content">
+        <section class="intro" aria-labelledby="page-title">
+            <div class="intro-copy">
+                <p class="eyebrow">CURATED STREAMING</p>
+                <h1 id="page-title">今晚，看点好的。</h1>
+                <p>聚合 Netflix、Disney+、Max 等平台的 IMDb 高分内容，把发现变成你的下一部片。</p>
+            </div>
+            <dl class="overview-stats" id="overview-stats" aria-label="内容概览">
+                <div><dt>收录</dt><dd>—</dd></div>
+                <div><dt>平均分</dt><dd>—</dd></div>
+                <div><dt>我的片单</dt><dd>—</dd></div>
+            </dl>
+        </section>
 
-    <div class="active-filters hidden" id="active-filters" aria-label="已应用的筛选条件"></div>
+        <section class="workspace" aria-label="作品浏览与筛选">
+            <nav class="library-tabs" id="status-filters" aria-label="片单视图">
+                <button class="library-tab active" type="button" data-status="">
+                    全部作品 <span id="status-count-all">—</span>
+                </button>
+                <button class="library-tab" type="button" data-status="watchlist">
+                    想看 <span id="status-count-watchlist">0</span>
+                </button>
+                <button class="library-tab" type="button" data-status="watching">
+                    在看 <span id="status-count-watching">0</span>
+                </button>
+                <button class="library-tab" type="button" data-status="watched">
+                    已看 <span id="status-count-watched">0</span>
+                </button>
+            </nav>
 
-    <div class="content-area">
-        <div class="titles-grid" id="titles-grid"></div>
-        <div id="scroll-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
-        <div id="scroll-loader" class="scroll-loader hidden" aria-live="polite">
-            <div class="spinner"></div>
-            加载更多...
-        </div>
-        <div id="scroll-end" class="scroll-end hidden">
-            已加载全部作品
-        </div>
-    </div>
+            <div class="filter-panel" id="filter-bar">
+                <div class="filter-block provider-block">
+                    <span class="filter-label">平台</span>
+                    <div class="filter-scroller" id="provider-filters" aria-label="按平台筛选"></div>
+                </div>
+                <div class="filter-block filter-controls">
+                    <span class="filter-label">细化</span>
+                    <div class="filter-group" id="type-filters" aria-label="按类型筛选">
+                        <button class="filter-btn active" type="button" data-type="">全部</button>
+                        <button class="filter-btn" type="button" data-type="movie">电影</button>
+                        <button class="filter-btn" type="button" data-type="tv">剧集</button>
+                    </div>
+                    <label class="select-wrap">
+                        <span class="sr-only">上映年份</span>
+                        <select class="filter-select" id="year-filter"><option value="">全部年份</option></select>
+                    </label>
+                    <label class="select-wrap">
+                        <span class="sr-only">最低评分</span>
+                        <select class="filter-select" id="rating-filter">
+                            <option value="0">全部分数</option>
+                            <option value="8">8.0 分以上</option>
+                            <option value="7.5">7.5 分以上</option>
+                            <option value="7">7.0 分以上</option>
+                        </select>
+                    </label>
+                    <label class="select-wrap sort-wrap">
+                        <span class="sr-only">排序方式</span>
+                        <select class="filter-select" id="sort-filter">
+                            <option value="release_date">最近上映</option>
+                            <option value="rating">评分最高</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+
+            <div class="active-filters hidden" id="active-filters" aria-label="已应用的筛选条件"></div>
+
+            <div class="results-bar">
+                <p id="stats-info" aria-live="polite">正在整理片单…</p>
+                <p id="sync-info" aria-live="polite"></p>
+            </div>
+
+            <div class="content-area">
+                <div class="titles-grid" id="titles-grid" aria-busy="true"></div>
+                <div id="scroll-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
+                <div id="scroll-loader" class="scroll-loader hidden" aria-live="polite">
+                    <span class="spinner" aria-hidden="true"></span>正在加载更多
+                </div>
+                <div id="scroll-end" class="scroll-end hidden">已浏览当前全部作品</div>
+            </div>
+        </section>
+    </main>
 
     <button id="back-to-top" type="button" aria-label="返回顶部" title="返回顶部">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+        <svg viewBox="0 0 24 24" fill="none"><path d="m6 14 6-6 6 6"/></svg>
     </button>
 
-    <div id="detail-modal" class="modal-overlay hidden">
-        <div class="modal-panel">
-            <button class="modal-close" id="close-modal" aria-label="关闭详情">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    <div id="detail-modal" class="modal-overlay hidden" role="presentation">
+        <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
+            <button class="modal-close" id="close-modal" type="button" aria-label="关闭详情">
+                <svg viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10M17 7 7 17"/></svg>
             </button>
             <div id="detail-content"></div>
-        </div>
+        </section>
     </div>
 
-    <script src="/static/js/app.js?v=17"></script>
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="/static/js/app.js?v=19"></script>
 </body>
 </html>

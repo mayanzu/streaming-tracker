@@ -1,13 +1,15 @@
-"""IMDb 官方数据集加载 —— 免 API Key、无限流、全量"""
+"""Low-memory access to the official IMDb ratings dataset."""
 
 import asyncio
 import gzip
 import logging
+import shutil
 import threading
 import time
-import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import httpx
 
 from app.config import DATA_DIR
 
@@ -18,132 +20,105 @@ CACHE_DIR = DATA_DIR
 CACHE_FILE = CACHE_DIR / "title.ratings.tsv"
 CACHE_MAX_AGE_HOURS = 24
 DOWNLOAD_RETRIES = 3
-DOWNLOAD_RETRY_DELAY = 5  # seconds
-
-_ratings = None  # imdb_id -> (rating, votes)
-_lock = threading.RLock()  # 使用可重入锁，支持双重检查
+DOWNLOAD_RETRY_DELAY = 5
+_lock = threading.RLock()
 
 
-def _ensure_dir():
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def _cache_valid():
+    if not CACHE_FILE.exists() or CACHE_FILE.stat().st_size == 0:
+        return False
+    mtime = datetime.fromtimestamp(CACHE_FILE.stat().st_mtime)
+    return datetime.now() - mtime < timedelta(hours=CACHE_MAX_AGE_HOURS)
 
 
 def _download():
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     gz_path = Path(f"{CACHE_FILE}.gz")
+    tmp_path = Path(f"{CACHE_FILE}.tmp")
     last_error = None
 
     for attempt in range(1, DOWNLOAD_RETRIES + 1):
         try:
-            logger.info("Downloading IMDb dataset (attempt %s/%s)...", attempt, DOWNLOAD_RETRIES)
-            import httpx
+            logger.info("Downloading IMDb ratings dataset (attempt %s/%s)", attempt, DOWNLOAD_RETRIES)
             with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-                with client.stream("GET", DATASET_URL) as r:
-                    r.raise_for_status()
-                    with open(gz_path, "wb") as f:
-                        for chunk in r.iter_bytes(chunk_size=8192):
-                            f.write(chunk)
-            with gzip.open(gz_path, "rb") as f_in:
-                with open(CACHE_FILE, "wb") as f_out:
-                    f_out.write(f_in.read())
+                with client.stream("GET", DATASET_URL) as response:
+                    response.raise_for_status()
+                    with open(gz_path, "wb") as output:
+                        for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                            output.write(chunk)
+            with gzip.open(gz_path, "rb") as source, open(tmp_path, "wb") as output:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+            tmp_path.replace(CACHE_FILE)
             gz_path.unlink(missing_ok=True)
-            logger.info("IMDb dataset downloaded and extracted")
+            logger.info("IMDb ratings dataset is ready")
             return
         except Exception as exc:
             last_error = exc
             gz_path.unlink(missing_ok=True)
+            tmp_path.unlink(missing_ok=True)
             if attempt < DOWNLOAD_RETRIES:
-                logger.warning(
-                    "IMDb download failed (attempt %s/%s), retrying in %ss: %s",
-                    attempt,
-                    DOWNLOAD_RETRIES,
-                    DOWNLOAD_RETRY_DELAY,
-                    exc,
-                )
+                logger.warning("IMDb dataset download failed; retrying in %ss: %s", DOWNLOAD_RETRY_DELAY, exc)
                 time.sleep(DOWNLOAD_RETRY_DELAY)
-            else:
-                logger.error("IMDb download failed after %s attempts: %s", DOWNLOAD_RETRIES, exc)
 
-    raise RuntimeError(
-        f"Failed to download IMDb dataset after {DOWNLOAD_RETRIES} attempts"
-    ) from last_error
+    raise RuntimeError("Failed to download IMDb ratings dataset") from last_error
 
 
-def _cache_valid():
-    if not CACHE_FILE.exists():
-        return False
-    mtime = datetime.fromtimestamp(CACHE_FILE.stat().st_mtime)
-    return (datetime.now() - mtime) < timedelta(hours=CACHE_MAX_AGE_HOURS)
-
-
-def _load_ratings_sync(force=False):
-    """同步加载 IMDb 评分到内存（内部使用，通过 asyncio.to_thread 调用）。"""
-    global _ratings
-
+def _ensure_dataset_sync(force=False):
     with _lock:
-        if _ratings is not None and not force:
-            return _ratings
-
-        _ensure_dir()
-
-        if not _cache_valid() or force:
+        if force or not _cache_valid():
             _download()
-
-        logger.info("Parsing IMDb ratings...")
-        ratings = {}
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            f.readline()  # skip header
-            for line in f:
-                parts = line.strip().split("\t")
-                if len(parts) >= 3:
-                    imdb_id = parts[0]
-                    try:
-                        rating = float(parts[1])
-                        votes = int(parts[2])
-                    except (ValueError, TypeError):
-                        continue
-                    ratings[imdb_id] = (rating, votes)
-
-        _ratings = ratings
-        logger.info("Loaded %s IMDb ratings", f"{len(_ratings):,}")
-
-    return _ratings
+    return CACHE_FILE
 
 
-async def load_ratings(force=False):
-    """异步加载 IMDb 评分，使用双重检查锁避免竞态条件。"""
-    with _lock:
-        if _ratings is not None and not force:
-            return _ratings
+def _get_ratings_sync(imdb_ids, force=False):
+    """Scan once and retain only requested IDs instead of loading millions of rows."""
+    wanted = {imdb_id for imdb_id in imdb_ids if imdb_id}
+    if not wanted:
+        return {}
 
-    # 释放锁后在线程中加载，避免阻塞事件循环
-    await asyncio.to_thread(_load_ratings_sync, force)
+    path = _ensure_dataset_sync(force=force)
+    ratings = {}
+    with open(path, "r", encoding="utf-8") as source:
+        next(source, None)
+        for line in source:
+            imdb_id, separator, remainder = line.partition("\t")
+            if not separator or imdb_id not in wanted:
+                continue
+            parts = remainder.rstrip("\n").split("\t")
+            if len(parts) < 2:
+                continue
+            try:
+                ratings[imdb_id] = (float(parts[0]), int(parts[1]))
+            except (TypeError, ValueError):
+                continue
+            if len(ratings) == len(wanted):
+                break
+    logger.info("Matched %s/%s requested IMDb ratings", len(ratings), len(wanted))
+    return ratings
 
-    with _lock:
-        return _ratings
+
+async def get_ratings(imdb_ids, force=False):
+    return await asyncio.to_thread(_get_ratings_sync, set(imdb_ids), force)
 
 
 async def get_rating(imdb_id):
-    """获取 IMDb 评分 (rating, votes)，无数据返回 (None, 0)。"""
-    ratings = await load_ratings()
+    ratings = await get_ratings({imdb_id})
     return ratings.get(imdb_id, (None, 0))
 
 
+async def load_ratings(force=False):
+    """Backward-compatible helper; it no longer builds a full in-memory dictionary."""
+    await asyncio.to_thread(_ensure_dataset_sync, force)
+    return {}
+
+
 async def preload_ratings():
-    """启动时预加载 IMDb 评分数据，避免首次请求时阻塞。"""
-    logger.info("Preloading IMDb ratings at startup...")
     try:
         await load_ratings()
     except Exception:
-        logger.exception("Failed to preload IMDb ratings, will retry on first request")
+        logger.exception("Failed to prepare IMDb ratings dataset")
 
 
 def clear_ratings():
-    """清除内存中的 IMDb 评分数据，释放内存。"""
-    global _ratings
-    with _lock:
-        if _ratings is not None:
-            _ratings = None
-            logger.info("IMDb ratings cache cleared from memory")
-            import gc
-            gc.collect()
-
+    """Kept for compatibility; lookups are already bounded-memory."""
+    return None

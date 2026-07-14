@@ -1,12 +1,13 @@
+import os
+import json
 import math
 import sqlite3
-import os
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import logging
 
-from app.config import DATABASE_URL, MIN_IMDB_RATING
+from app.config import DATABASE_URL, MIN_IMDB_RATING, PENDING_RETRY_DAYS, PROVIDER_STALE_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,8 @@ def init_db():
             rating_source TEXT,
             rating_votes INTEGER,
             added_date TEXT,
+            first_seen_at TEXT,
+            last_seen_at TEXT,
             last_synced_at TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(tmdb_id, type)
@@ -88,6 +91,8 @@ def init_db():
             "rating_votes": "INTEGER",
             "last_synced_at": "TEXT",
             "imdb_id": "TEXT",
+            "first_seen_at": "TEXT",
+            "last_seen_at": "TEXT",
         },
     )
 
@@ -101,6 +106,68 @@ def init_db():
         )
     """)
     _ensure_title_identity_schema(conn, cursor)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS title_provider_availability (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title_id INTEGER NOT NULL,
+            provider_name TEXT NOT NULL,
+            region TEXT NOT NULL DEFAULT '',
+            monetization_type TEXT NOT NULL DEFAULT 'mixed',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE,
+            UNIQUE(title_id, provider_name, region, monetization_type)
+        )
+    """)
+    now = _utc_now()
+    cursor.execute("""
+        INSERT OR IGNORE INTO title_provider_availability
+            (title_id, provider_name, region, monetization_type, first_seen_at, last_seen_at, is_active)
+        SELECT tp.title_id, tp.provider_name, '', 'mixed', ?, ?, 1
+        FROM title_providers tp
+        JOIN titles t ON t.id = tp.title_id
+    """, (now, now))
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pending_titles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tmdb_id INTEGER NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('movie', 'tv')),
+            title TEXT,
+            imdb_id TEXT,
+            reason TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_retry_at TEXT NOT NULL,
+            last_error TEXT,
+            data_json TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(tmdb_id, type)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sync_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+    # 用户片单与抓取数据分离：即使作品表在评分重建时被清空，个人状态也不会丢失。
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS title_preferences (
+            tmdb_id INTEGER NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('movie', 'tv')),
+            watch_status TEXT NOT NULL CHECK(watch_status IN ('watchlist', 'watching', 'watched')),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (tmdb_id, type)
+        )
+    """)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sync_runs (
@@ -122,6 +189,13 @@ def init_db():
             current_provider_index INTEGER DEFAULT 0,
             provider_total INTEGER DEFAULT 0,
             phase TEXT,
+            heartbeat_at TEXT,
+            pending INTEGER DEFAULT 0,
+            request_failed INTEGER DEFAULT 0,
+            inserted INTEGER DEFAULT 0,
+            updated INTEGER DEFAULT 0,
+            unchanged INTEGER DEFAULT 0,
+            provider_expired INTEGER DEFAULT 0,
             error TEXT
         )
     """)
@@ -133,6 +207,13 @@ def init_db():
             "current_provider_index": "INTEGER DEFAULT 0",
             "provider_total": "INTEGER DEFAULT 0",
             "phase": "TEXT",
+            "heartbeat_at": "TEXT",
+            "pending": "INTEGER DEFAULT 0",
+            "request_failed": "INTEGER DEFAULT 0",
+            "inserted": "INTEGER DEFAULT 0",
+            "updated": "INTEGER DEFAULT 0",
+            "unchanged": "INTEGER DEFAULT 0",
+            "provider_expired": "INTEGER DEFAULT 0",
         },
     )
 
@@ -152,7 +233,18 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_type ON titles(type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_added_date ON titles(added_date)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_release_date ON titles(release_date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_preferences_status ON title_preferences(watch_status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs(started_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pending_retry ON pending_titles(next_retry_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_availability_active_provider ON title_provider_availability(is_active, provider_name)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_availability_title_active_provider ON title_provider_availability(title_id, is_active, provider_name)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_availability_last_seen ON title_provider_availability(last_seen_at)")
+    stale_before = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+    cursor.execute("""
+        UPDATE sync_runs
+        SET status='abandoned', finished_at=?, error=COALESCE(error, 'Stale running sync recovered at startup')
+        WHERE status='running' AND started_at < ?
+    """, (now, stale_before))
     _drop_columns(cursor, "titles", ("tmdb_vote_average", "tmdb_vote_count"))
 
     conn.commit()
@@ -198,6 +290,8 @@ def _ensure_title_identity_schema(conn, cursor):
                 rating_source TEXT,
                 rating_votes INTEGER,
                 added_date TEXT,
+                first_seen_at TEXT,
+                last_seen_at TEXT,
                 last_synced_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(tmdb_id, type)
@@ -207,12 +301,12 @@ def _ensure_title_identity_schema(conn, cursor):
             INSERT INTO titles (
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
-                last_synced_at, created_at
+                first_seen_at, last_seen_at, last_synced_at, created_at
             )
             SELECT
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
-                last_synced_at, created_at
+                first_seen_at, last_seen_at, last_synced_at, created_at
             FROM titles_old
         """)
         cursor.execute("""
@@ -312,49 +406,72 @@ def insert_title(title_data, conn=None):
             cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
             "SELECT id FROM titles WHERE tmdb_id = ? AND type = ?",
-            (title_data['tmdb_id'], title_data['type']),
+            (title_data["tmdb_id"], title_data["type"]),
         )
         existing = cursor.fetchone()
 
         if existing:
             cursor.execute("""
                 UPDATE titles SET
-                    imdb_id=?, title=?, original_title=?, type=?, overview=?,
-                    release_date=?, poster_url=?, imdb_rating=?,
-                    rating_source=?, rating_votes=?, added_date=?, last_synced_at=?
+                    imdb_id=COALESCE(?, imdb_id),
+                    title=COALESCE(NULLIF(?, ''), title),
+                    original_title=COALESCE(NULLIF(?, ''), original_title),
+                    type=?,
+                    overview=COALESCE(NULLIF(?, ''), overview),
+                    release_date=COALESCE(NULLIF(?, ''), release_date),
+                    poster_url=COALESCE(?, poster_url), imdb_rating=?,
+                    rating_source=?, rating_votes=?,
+                    first_seen_at=COALESCE(first_seen_at, added_date, created_at, ?),
+                    last_seen_at=?, last_synced_at=?
                 WHERE tmdb_id=? AND type=?
             """, (
-                title_data.get('imdb_id'),
-                title_data['title'], title_data['original_title'],
-                title_data['type'], title_data['overview'],
-                title_data['release_date'], title_data['poster_url'],
-                rating, rating_source,
-                rating_votes, title_data['added_date'],
-                title_data.get('last_synced_at') or _utc_now(),
-                title_data['tmdb_id'], title_data['type']
+                title_data.get("imdb_id"),
+                title_data["title"], title_data.get("original_title"),
+                title_data["type"], title_data.get("overview"),
+                title_data.get("release_date"), title_data.get("poster_url"),
+                rating, rating_source, rating_votes,
+                title_data.get("first_seen_at") or _utc_now(),
+                title_data.get("last_seen_at") or _utc_now(),
+                title_data.get("last_synced_at") or _utc_now(),
+                title_data["tmdb_id"], title_data["type"],
             ))
-            title_id = existing['id']
+            title_id = existing["id"]
         else:
             cursor.execute("""
                 INSERT INTO titles
                 (tmdb_id, imdb_id, title, original_title, type, overview, release_date,
-                 poster_url, imdb_rating, rating_source, rating_votes, added_date, last_synced_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
+                 first_seen_at, last_seen_at, last_synced_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
-                title_data['tmdb_id'], title_data.get('imdb_id'), title_data['title'],
-                title_data['original_title'], title_data['type'],
-                title_data['overview'], title_data['release_date'],
-                title_data['poster_url'], rating,
-                rating_source, rating_votes,
-                title_data['added_date'], title_data.get('last_synced_at') or _utc_now()
+                title_data["tmdb_id"], title_data.get("imdb_id"), title_data["title"],
+                title_data.get("original_title"), title_data["type"],
+                title_data.get("overview"), title_data.get("release_date"),
+                title_data.get("poster_url"), rating, rating_source, rating_votes,
+                title_data.get("added_date") or date.today().isoformat(),
+                title_data.get("first_seen_at") or _utc_now(),
+                title_data.get("last_seen_at") or _utc_now(),
+                title_data.get("last_synced_at") or _utc_now(),
             ))
             title_id = cursor.lastrowid
 
-        for provider in title_data.get('providers') or []:
+        observed_at = title_data.get("last_seen_at") or _utc_now()
+        provider_regions = title_data.get("provider_regions") or {}
+        for provider in title_data.get("providers") or []:
             cursor.execute(
                 "INSERT OR IGNORE INTO title_providers (title_id, provider_name) VALUES (?,?)",
-                (title_id, provider)
+                (title_id, provider),
             )
+            regions = provider_regions.get(provider) or [""]
+            for region in regions:
+                cursor.execute("""
+                    INSERT INTO title_provider_availability
+                        (title_id, provider_name, region, monetization_type,
+                         first_seen_at, last_seen_at, is_active)
+                    VALUES (?, ?, ?, 'mixed', ?, ?, 1)
+                    ON CONFLICT(title_id, provider_name, region, monetization_type)
+                    DO UPDATE SET last_seen_at=excluded.last_seen_at, is_active=1
+                """, (title_id, provider, region, observed_at, observed_at))
 
         if owns_conn:
             conn.commit()
@@ -368,16 +485,222 @@ def insert_title(title_data, conn=None):
             conn.close()
 
 
+def get_title_cache(identities):
+    identities = list(dict.fromkeys(identities))
+    if not identities:
+        return {}
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cache = {}
+        for offset in range(0, len(identities), 400):
+            chunk = identities[offset:offset + 400]
+            clauses = " OR ".join("(tmdb_id=? AND type=?)" for _ in chunk)
+            params = [value for identity in chunk for value in identity]
+            cursor.execute(f"SELECT * FROM titles WHERE {clauses}", params)
+            for row in cursor.fetchall():
+                item = dict(row)
+                cache[(item["type"], item["tmdb_id"])] = item
+        return cache
+    finally:
+        conn.close()
+
+
+def get_due_pending_titles(limit=500):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM pending_titles
+            WHERE next_retry_at <= ?
+            ORDER BY next_retry_at, id
+            LIMIT ?
+        """, (_utc_now(), limit))
+        results = []
+        for row in cursor.fetchall():
+            stored = dict(row)
+            try:
+                payload = json.loads(stored["data_json"])
+            except (TypeError, ValueError):
+                payload = {}
+            payload.update({
+                "tmdb_id": stored["tmdb_id"],
+                "type": stored["type"],
+                "title": payload.get("title") or stored["title"] or "",
+                "imdb_id": payload.get("imdb_id") or stored["imdb_id"],
+                "pending_attempt_count": stored["attempt_count"],
+            })
+            results.append(payload)
+        return results
+    finally:
+        conn.close()
+
+
+def claim_catalog_window(total_days, window_days, recent_days):
+    if total_days <= recent_days or window_days <= 0:
+        return None
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT value FROM sync_state WHERE key='catalog_window_index'")
+        row = cursor.fetchone()
+        index = int(row["value"]) if row else 0
+        available_days = total_days - recent_days
+        window_count = max(1, math.ceil(available_days / window_days))
+        index %= window_count
+        range_end = date.today() - timedelta(days=recent_days + index * window_days + 1)
+        oldest = date.today() - timedelta(days=total_days)
+        range_start = max(oldest, range_end - timedelta(days=window_days - 1))
+        next_index = (index + 1) % window_count
+        cursor.execute("""
+            INSERT INTO sync_state(key, value, updated_at)
+            VALUES ('catalog_window_index', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """, (str(next_index), _utc_now()))
+        conn.commit()
+        return range_start, range_end
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _retry_delay_days(reason, attempt_count):
+    if reason == "low_rating":
+        return max(PENDING_RETRY_DAYS[-1] if PENDING_RETRY_DAYS else 30, 30)
+    schedule = PENDING_RETRY_DAYS or (1, 3, 7, 14, 30)
+    return schedule[min(max(attempt_count - 1, 0), len(schedule) - 1)]
+
+
+def _write_pending(cursor, title_data, observed_at):
+    cursor.execute(
+        "SELECT attempt_count, first_seen_at FROM pending_titles WHERE tmdb_id=? AND type=?",
+        (title_data["tmdb_id"], title_data["type"]),
+    )
+    existing = cursor.fetchone()
+    attempt_count = (existing["attempt_count"] if existing else 0) + 1
+    reason = title_data.get("pending_reason") or "missing_rating"
+    next_retry = datetime.now(timezone.utc) + timedelta(
+        days=_retry_delay_days(reason, attempt_count)
+    )
+    payload = dict(title_data)
+    payload.pop("last_error", None)
+    cursor.execute("""
+        INSERT INTO pending_titles
+            (tmdb_id, type, title, imdb_id, reason, attempt_count, next_retry_at,
+             last_error, data_json, first_seen_at, last_seen_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tmdb_id, type) DO UPDATE SET
+            title=excluded.title, imdb_id=COALESCE(excluded.imdb_id, pending_titles.imdb_id),
+            reason=excluded.reason, attempt_count=excluded.attempt_count,
+            next_retry_at=excluded.next_retry_at, last_error=excluded.last_error,
+            data_json=excluded.data_json, last_seen_at=excluded.last_seen_at,
+            updated_at=excluded.updated_at
+    """, (
+        title_data["tmdb_id"], title_data["type"], title_data.get("title"),
+        title_data.get("imdb_id"), reason, attempt_count, next_retry.isoformat(),
+        title_data.get("last_error"), json.dumps(payload, ensure_ascii=False),
+        existing["first_seen_at"] if existing else observed_at,
+        observed_at, observed_at, observed_at,
+    ))
+
+
+def persist_sync_batch(titles, pending_titles, provider_stale_days=PROVIDER_STALE_DAYS):
+    """Open/use/commit/close SQLite in one worker thread and return structured outcomes."""
+    conn = get_db_connection()
+    outcomes = {
+        "processed": 0, "skipped": 0, "inserted": 0,
+        "updated": 0, "unchanged": 0, "provider_expired": 0,
+        "errors": [],
+    }
+    observed_at = _utc_now()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        for item_index, title_data in enumerate(titles):
+            savepoint = f"title_{item_index}"
+            cursor.execute(f"SAVEPOINT {savepoint}")
+            try:
+                cursor.execute(
+                    "SELECT * FROM titles WHERE tmdb_id=? AND type=?",
+                    (title_data["tmdb_id"], title_data["type"]),
+                )
+                before = cursor.fetchone()
+                comparable_fields = (
+                    "imdb_id", "title", "original_title", "overview", "release_date",
+                    "poster_url", "imdb_rating", "rating_source", "rating_votes",
+                )
+                changed = before is None or any(
+                    title_data.get(field) not in (None, "")
+                    and title_data.get(field) != before[field]
+                    for field in comparable_fields
+                )
+                title_data = dict(title_data)
+                title_data["last_seen_at"] = observed_at
+                insert_title(title_data, conn=conn)
+                cursor.execute(
+                    "DELETE FROM pending_titles WHERE tmdb_id=? AND type=?",
+                    (title_data["tmdb_id"], title_data["type"]),
+                )
+                outcomes["processed"] += 1
+                if before is None:
+                    outcomes["inserted"] += 1
+                elif changed:
+                    outcomes["updated"] += 1
+                else:
+                    outcomes["unchanged"] += 1
+                cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except Exception as exc:
+                cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
+                outcomes["skipped"] += 1
+                outcomes["errors"].append(
+                    f"{title_data.get('title', '?')}: {type(exc).__name__}: {exc}"
+                )
+
+        for item_index, title_data in enumerate(pending_titles):
+            savepoint = f"pending_{item_index}"
+            cursor.execute(f"SAVEPOINT {savepoint}")
+            try:
+                _write_pending(cursor, title_data, observed_at)
+                cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except Exception as exc:
+                cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
+                outcomes["skipped"] += 1
+                outcomes["errors"].append(
+                    f"pending {title_data.get('title', '?')}: {type(exc).__name__}: {exc}"
+                )
+
+        stale_before = (datetime.now(timezone.utc) - timedelta(days=provider_stale_days)).isoformat()
+        cursor.execute("""
+            UPDATE title_provider_availability
+            SET is_active=0
+            WHERE is_active=1 AND last_seen_at < ?
+        """, (stale_before,))
+        outcomes["provider_expired"] = max(cursor.rowcount, 0)
+        conn.commit()
+        return outcomes
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def create_sync_run(reason, days_back, max_pages, window_days):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO sync_runs (reason, status, days_back, max_pages, window_days, started_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO sync_runs
+                (reason, status, days_back, max_pages, window_days, started_at, heartbeat_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (reason, "running", days_back, max_pages, window_days, _utc_now()),
+            (reason, "running", days_back, max_pages, window_days, _utc_now(), _utc_now()),
         )
         sync_run_id = cursor.lastrowid
         conn.commit()
@@ -397,7 +720,8 @@ def finish_sync_run(sync_run_id, status, result):
             """
             UPDATE sync_runs
             SET status=?, finished_at=?, discovered=?, qualified=?, processed=?,
-                skipped=?, no_rating=?, low_rating=?, error=?
+                skipped=?, no_rating=?, low_rating=?, pending=?, request_failed=?,
+                inserted=?, updated=?, unchanged=?, provider_expired=?, heartbeat_at=?, error=?
             WHERE id=?
             """,
             (
@@ -409,6 +733,13 @@ def finish_sync_run(sync_run_id, status, result):
                 result.get("skipped", 0),
                 result.get("no_rating", 0),
                 result.get("low_rating", 0),
+                result.get("pending", 0),
+                result.get("request_failed", 0),
+                result.get("inserted", 0),
+                result.get("updated", 0),
+                result.get("unchanged", 0),
+                result.get("provider_expired", 0),
+                _utc_now(),
                 result.get("error"),
                 sync_run_id,
             ),
@@ -433,8 +764,9 @@ def update_sync_run_progress(sync_run_id, progress):
                 """
                 UPDATE sync_runs
                 SET discovered=?, qualified=?, processed=?, skipped=?,
-                    no_rating=?, low_rating=?, current_provider=?,
-                    current_provider_index=?, provider_total=?, phase=?
+                    no_rating=?, low_rating=?, pending=?, request_failed=?,
+                    inserted=?, updated=?, unchanged=?, provider_expired=?,
+                    current_provider=?, current_provider_index=?, provider_total=?, phase=?, heartbeat_at=?
                 WHERE id=?
                 """,
                 (
@@ -444,10 +776,17 @@ def update_sync_run_progress(sync_run_id, progress):
                     skipped,
                     stats.get("no_rating", 0),
                     stats.get("low_rating", 0),
+                    stats.get("pending", 0),
+                    stats.get("request_failed", 0),
+                    progress.get("inserted", 0),
+                    progress.get("updated", 0),
+                    progress.get("unchanged", 0),
+                    progress.get("provider_expired", 0),
                     progress.get("provider"),
                     progress.get("provider_index", 0),
                     progress.get("provider_total", 0),
                     progress.get("phase"),
+                    _utc_now(),
                     sync_run_id,
                 ),
             )
@@ -456,8 +795,8 @@ def update_sync_run_progress(sync_run_id, progress):
             cursor.execute(
                 """
                 UPDATE sync_runs
-                SET discovered=?, qualified=?, no_rating=?, low_rating=?,
-                    current_provider=?, current_provider_index=?, provider_total=?, phase=?
+                SET discovered=?, qualified=?, no_rating=?, low_rating=?, pending=?, request_failed=?,
+                    current_provider=?, current_provider_index=?, provider_total=?, phase=?, heartbeat_at=?
                 WHERE id=?
                 """,
                 (
@@ -465,10 +804,13 @@ def update_sync_run_progress(sync_run_id, progress):
                     stats.get("qualified", 0),
                     stats.get("no_rating", 0),
                     stats.get("low_rating", 0),
+                    stats.get("pending", 0),
+                    stats.get("request_failed", 0),
                     progress.get("provider"),
                     progress.get("provider_index", 0),
                     progress.get("provider_total", 0),
                     progress.get("phase"),
+                    _utc_now(),
                     sync_run_id,
                 ),
             )
@@ -632,12 +974,21 @@ def purge_all_titles():
         conn.close()
 
 
-def _build_title_filters(provider=None, title_type=None, search=None, year=None, min_rating=None):
+def _build_title_filters(provider=None, title_type=None, search=None, year=None, min_rating=None,
+                         watch_status=None):
     filters = []
     params = []
 
     if provider:
-        filters.append("tp.provider_name = ?")
+        filters.append("""
+            EXISTS (
+                SELECT 1
+                FROM title_provider_availability provider_filter
+                WHERE provider_filter.title_id = t.id
+                  AND provider_filter.is_active = 1
+                  AND provider_filter.provider_name = ?
+            )
+        """)
         params.append(provider)
     if title_type:
         filters.append("t.type = ?")
@@ -651,6 +1002,9 @@ def _build_title_filters(provider=None, title_type=None, search=None, year=None,
     if min_rating is not None:
         filters.append("t.imdb_rating >= ?")
         params.append(min_rating)
+    if watch_status:
+        filters.append("p.watch_status = ?")
+        params.append(watch_status)
 
     filters.append(TRUSTED_RATING_CONDITION_T)
 
@@ -666,8 +1020,9 @@ def _fetch_provider_map(cursor, title_ids):
     cursor.execute(
         f"""
         SELECT title_id, provider_name
-        FROM title_providers
-        WHERE title_id IN ({placeholders})
+        FROM title_provider_availability
+        WHERE is_active=1 AND title_id IN ({placeholders})
+        GROUP BY title_id, provider_name
         ORDER BY provider_name
         """,
         title_ids,
@@ -679,8 +1034,8 @@ def _fetch_provider_map(cursor, title_ids):
     return provider_map
 
 
-def get_titles(page=1, limit=20, provider=None, sort_by="rating", order="desc",
-               title_type=None, search=None, year=None, min_rating=None):
+def get_titles(page=1, limit=20, provider=None, sort_by="release_date", order="desc",
+               title_type=None, search=None, year=None, min_rating=None, watch_status=None):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -691,12 +1046,12 @@ def get_titles(page=1, limit=20, provider=None, sort_by="rating", order="desc",
             "rating": "t.imdb_rating",
             "release_date": "t.release_date",
         }
-        sort_col = sort_map.get(sort_by, "t.added_date")
+        sort_col = sort_map.get(sort_by, "t.release_date")
         direction = "DESC" if order == "desc" else "ASC"
 
         from_sql = """
             FROM titles t
-            LEFT JOIN title_providers tp ON t.id = tp.title_id
+            LEFT JOIN title_preferences p ON t.tmdb_id = p.tmdb_id AND t.type = p.type
         """
         where_sql, params = _build_title_filters(
             provider=provider,
@@ -704,10 +1059,12 @@ def get_titles(page=1, limit=20, provider=None, sort_by="rating", order="desc",
             search=search,
             year=year,
             min_rating=min_rating,
+            watch_status=watch_status,
         )
 
         query = f"""
-            SELECT DISTINCT t.*
+            SELECT t.*, COALESCE(p.watch_status, '') AS watch_status,
+                   p.updated_at AS status_updated_at
             {from_sql}
             {where_sql}
             ORDER BY {sort_col} {direction} NULLS LAST
@@ -721,7 +1078,7 @@ def get_titles(page=1, limit=20, provider=None, sort_by="rating", order="desc",
         for title in titles:
             title["providers"] = provider_map.get(title["id"], [])
 
-        count_query = f"SELECT COUNT(DISTINCT t.id) {from_sql} {where_sql}"
+        count_query = f"SELECT COUNT(*) {from_sql} {where_sql}"
         cursor.execute(count_query, params)
         total = cursor.fetchone()[0]
     finally:
@@ -742,19 +1099,62 @@ def get_title_detail(title_id):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            f"SELECT * FROM titles t WHERE t.id = ? AND {TRUSTED_RATING_CONDITION_T}",
-            (title_id,),
-        )
+        cursor.execute(f"""
+            SELECT t.*, COALESCE(p.watch_status, '') AS watch_status,
+                   p.updated_at AS status_updated_at
+            FROM titles t
+            LEFT JOIN title_preferences p ON t.tmdb_id = p.tmdb_id AND t.type = p.type
+            WHERE t.id = ? AND {TRUSTED_RATING_CONDITION_T}
+        """, (title_id,))
         row = cursor.fetchone()
         if not row:
             return None
         title = dict(row)
-        cursor.execute("SELECT provider_name FROM title_providers WHERE title_id = ?", (title_id,))
+        cursor.execute("""
+            SELECT provider_name
+            FROM title_provider_availability
+            WHERE title_id = ? AND is_active=1
+            GROUP BY provider_name
+            ORDER BY provider_name
+        """, (title_id,))
         title['providers'] = [r['provider_name'] for r in cursor.fetchall()]
         return title
     finally:
         conn.close()
+
+
+def update_title_status(title_id, watch_status):
+    """更新个人片单状态；空字符串表示移出片单。"""
+    allowed = {"watchlist", "watching", "watched"}
+    if watch_status and watch_status not in allowed:
+        raise ValueError("invalid watch status")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT tmdb_id, type FROM titles t WHERE id = ? AND {TRUSTED_RATING_CONDITION_T}",
+            (title_id,),
+        )
+        title = cursor.fetchone()
+        if not title:
+            return None
+
+        identity = (title["tmdb_id"], title["type"])
+        if watch_status:
+            cursor.execute("""
+                INSERT INTO title_preferences (tmdb_id, type, watch_status, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(tmdb_id, type) DO UPDATE SET
+                    watch_status = excluded.watch_status,
+                    updated_at = excluded.updated_at
+            """, (*identity, watch_status, _utc_now()))
+        else:
+            cursor.execute(
+                "DELETE FROM title_preferences WHERE tmdb_id = ? AND type = ?",
+                identity,
+            )
+
+    return get_title_detail(title_id)
 
 
 def get_providers():
@@ -762,10 +1162,10 @@ def get_providers():
     try:
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT tp.provider_name, COUNT(*) as count
-            FROM title_providers tp
+            SELECT tp.provider_name, COUNT(DISTINCT tp.title_id) as count
+            FROM title_provider_availability tp
             JOIN titles t ON t.id = tp.title_id
-            WHERE {TRUSTED_RATING_CONDITION_T}
+            WHERE tp.is_active=1 AND {TRUSTED_RATING_CONDITION_T}
             GROUP BY tp.provider_name
             ORDER BY count DESC
         """)
@@ -806,6 +1206,9 @@ def get_stats():
         )
         last_synced_at = cursor.fetchone()["last_synced_at"]
 
+        cursor.execute("SELECT COUNT(*) AS count FROM pending_titles")
+        pending_count = cursor.fetchone()["count"]
+
         cursor.execute(f"""
             SELECT DISTINCT substr(t.release_date,1,4) as y
             FROM titles t
@@ -813,6 +1216,15 @@ def get_stats():
             ORDER BY y DESC
         """)
         years = [row["y"] for row in cursor.fetchall() if row["y"]]
+
+        cursor.execute(f"""
+            SELECT p.watch_status, COUNT(*) AS count
+            FROM title_preferences p
+            JOIN titles t ON t.tmdb_id = p.tmdb_id AND t.type = p.type
+            WHERE {TRUSTED_RATING_CONDITION_T}
+            GROUP BY p.watch_status
+        """)
+        by_status = {row["watch_status"]: row["count"] for row in cursor.fetchall()}
 
         cursor.execute(
             """
@@ -830,7 +1242,9 @@ def get_stats():
             "avg_rating": round(avg, 1) if avg else 0,
             "last_update": last_update,
             "last_synced_at": last_synced_at,
+            "pending": pending_count,
             "years": years,
+            "by_status": by_status,
             "latest_sync": dict(latest_sync) if latest_sync else None,
         }
     finally:

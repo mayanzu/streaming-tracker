@@ -43,14 +43,15 @@ MAIN_FILTER_PROVIDERS = tuple(
 )
 
 CHINESE_FOCUSED_REGIONS = ("TW", "HK", "SG", "MY")
+GLOBAL_DISCOVERY_REGIONS = (*CHINESE_FOCUSED_REGIONS, "JP", "KR", "US", "GB", "CA", "AU")
 
 DEFAULT_PROVIDER_REGIONS = {
-    "netflix": CHINESE_FOCUSED_REGIONS,
-    "disney": CHINESE_FOCUSED_REGIONS,
-    "max": CHINESE_FOCUSED_REGIONS,
-    "amazon": (*CHINESE_FOCUSED_REGIONS, "JP"),
-    "apple": CHINESE_FOCUSED_REGIONS,
-    "hulu": (*CHINESE_FOCUSED_REGIONS, "JP"),
+    "netflix": GLOBAL_DISCOVERY_REGIONS,
+    "disney": GLOBAL_DISCOVERY_REGIONS,
+    "max": GLOBAL_DISCOVERY_REGIONS,
+    "amazon": GLOBAL_DISCOVERY_REGIONS,
+    "apple": GLOBAL_DISCOVERY_REGIONS,
+    "hulu": GLOBAL_DISCOVERY_REGIONS,
 }
 
 
@@ -73,6 +74,17 @@ MIN_IMDB_VOTES = int(os.getenv("MIN_IMDB_VOTES", "50"))
 OMDB_MIN_VOTES = int(os.getenv("OMDB_MIN_VOTES", "100"))
 ENRICH_CONCURRENCY = int(os.getenv("ENRICH_CONCURRENCY", "30"))
 DISCOVER_CONCURRENCY = int(os.getenv("DISCOVER_CONCURRENCY", "10"))
+WATCH_MONETIZATION_TYPES = os.getenv(
+    "WATCH_MONETIZATION_TYPES", "flatrate,ads,free,rent,buy"
+).replace(",", "|")
+HTTP_RETRIES = int(os.getenv("HTTP_RETRIES", "3"))
+DETAIL_REFRESH_DAYS = int(os.getenv("DETAIL_REFRESH_DAYS", "7"))
+PENDING_RETRY_DAYS = tuple(
+    int(value)
+    for value in os.getenv("PENDING_RETRY_DAYS", "1,3,7,14,30").split(",")
+    if value.strip()
+)
+PROVIDER_STALE_DAYS = int(os.getenv("PROVIDER_STALE_DAYS", "45"))
 
 # 本地同步上传目标。示例：root@192.168.1.2:/app/data/tracker.db
 ROUTER_TARGET = os.getenv("ROUTER_TARGET", "")
@@ -85,6 +97,12 @@ SYNC_TIMEZONE = os.getenv("SYNC_TIMEZONE", "Asia/Shanghai")
 SYNC_DAYS_BACK = int(os.getenv("SYNC_DAYS_BACK", "30"))
 SYNC_MAX_PAGES = int(os.getenv("SYNC_MAX_PAGES", "5"))
 SYNC_WINDOW_DAYS = int(os.getenv("SYNC_WINDOW_DAYS", "0"))
+SYNC_INCREMENTAL_OVERLAP_DAYS = int(os.getenv("SYNC_INCREMENTAL_OVERLAP_DAYS", "3"))
+SYNC_CATALOG_SCAN_ENABLED = os.getenv("SYNC_CATALOG_SCAN_ENABLED", "true").lower() in (
+    "1", "true", "yes", "on",
+)
+SYNC_CATALOG_SCAN_DAYS_BACK = int(os.getenv("SYNC_CATALOG_SCAN_DAYS_BACK", "3650"))
+SYNC_CATALOG_WINDOW_DAYS = int(os.getenv("SYNC_CATALOG_WINDOW_DAYS", "365"))
 SYNC_BOOTSTRAP_ON_EMPTY = os.getenv("SYNC_BOOTSTRAP_ON_EMPTY", "true").lower() in (
     "1",
     "true",
