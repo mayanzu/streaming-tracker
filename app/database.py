@@ -93,6 +93,7 @@ def init_db():
             "imdb_id": "TEXT",
             "first_seen_at": "TEXT",
             "last_seen_at": "TEXT",
+            "countries_synced_at": "TEXT",
         },
     )
 
@@ -119,6 +120,15 @@ def init_db():
             is_active INTEGER NOT NULL DEFAULT 1,
             FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE,
             UNIQUE(title_id, provider_name, region, monetization_type)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS title_countries (
+            title_id INTEGER NOT NULL,
+            country_code TEXT NOT NULL CHECK(length(country_code) = 2),
+            FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE,
+            PRIMARY KEY (title_id, country_code)
         )
     """)
     now = _utc_now()
@@ -239,6 +249,7 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_availability_active_provider ON title_provider_availability(is_active, provider_name)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_availability_title_active_provider ON title_provider_availability(title_id, is_active, provider_name)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_availability_last_seen ON title_provider_availability(last_seen_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_title_countries_code_title ON title_countries(country_code, title_id)")
     stale_before = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
     cursor.execute("""
         UPDATE sync_runs
@@ -293,6 +304,7 @@ def _ensure_title_identity_schema(conn, cursor):
                 first_seen_at TEXT,
                 last_seen_at TEXT,
                 last_synced_at TEXT,
+                countries_synced_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(tmdb_id, type)
             )
@@ -301,12 +313,12 @@ def _ensure_title_identity_schema(conn, cursor):
             INSERT INTO titles (
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
-                first_seen_at, last_seen_at, last_synced_at, created_at
+                first_seen_at, last_seen_at, last_synced_at, countries_synced_at, created_at
             )
             SELECT
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
-                first_seen_at, last_seen_at, last_synced_at, created_at
+                first_seen_at, last_seen_at, last_synced_at, countries_synced_at, created_at
             FROM titles_old
         """)
         cursor.execute("""
@@ -373,6 +385,16 @@ def _normalize_rating_source(title_data):
     return rating, source, title_data.get("rating_votes")
 
 
+def _normalize_country_codes(values):
+    codes = []
+    for value in values or []:
+        code = value.get("iso_3166_1") if isinstance(value, dict) else value
+        code = str(code or "").strip().upper()
+        if len(code) == 2 and code.isalpha() and code not in codes:
+            codes.append(code)
+    return codes
+
+
 def update_title_imdb_id(title_id, imdb_id):
     if not title_id or not imdb_id:
         return
@@ -396,6 +418,11 @@ def insert_title(title_data, conn=None):
         conn = get_db_connection()
     cursor = conn.cursor()
     rating, rating_source, rating_votes = _normalize_rating_source(title_data)
+    countries_supplied = "origin_countries" in title_data
+    country_codes = _normalize_country_codes(title_data.get("origin_countries"))
+    countries_synced_at = title_data.get("countries_synced_at")
+    if countries_supplied and not countries_synced_at:
+        countries_synced_at = title_data.get("last_synced_at") or _utc_now()
     if rating is None:
         if owns_conn:
             conn.close()
@@ -422,7 +449,8 @@ def insert_title(title_data, conn=None):
                     poster_url=COALESCE(?, poster_url), imdb_rating=?,
                     rating_source=?, rating_votes=?,
                     first_seen_at=COALESCE(first_seen_at, added_date, created_at, ?),
-                    last_seen_at=?, last_synced_at=?
+                    last_seen_at=?, last_synced_at=?,
+                    countries_synced_at=COALESCE(?, countries_synced_at)
                 WHERE tmdb_id=? AND type=?
             """, (
                 title_data.get("imdb_id"),
@@ -433,6 +461,7 @@ def insert_title(title_data, conn=None):
                 title_data.get("first_seen_at") or _utc_now(),
                 title_data.get("last_seen_at") or _utc_now(),
                 title_data.get("last_synced_at") or _utc_now(),
+                countries_synced_at,
                 title_data["tmdb_id"], title_data["type"],
             ))
             title_id = existing["id"]
@@ -441,8 +470,8 @@ def insert_title(title_data, conn=None):
                 INSERT INTO titles
                 (tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                  poster_url, imdb_rating, rating_source, rating_votes, added_date,
-                 first_seen_at, last_seen_at, last_synced_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 first_seen_at, last_seen_at, last_synced_at, countries_synced_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 title_data["tmdb_id"], title_data.get("imdb_id"), title_data["title"],
                 title_data.get("original_title"), title_data["type"],
@@ -452,6 +481,7 @@ def insert_title(title_data, conn=None):
                 title_data.get("first_seen_at") or _utc_now(),
                 title_data.get("last_seen_at") or _utc_now(),
                 title_data.get("last_synced_at") or _utc_now(),
+                countries_synced_at,
             ))
             title_id = cursor.lastrowid
 
@@ -472,6 +502,13 @@ def insert_title(title_data, conn=None):
                     ON CONFLICT(title_id, provider_name, region, monetization_type)
                     DO UPDATE SET last_seen_at=excluded.last_seen_at, is_active=1
                 """, (title_id, provider, region, observed_at, observed_at))
+
+        if countries_supplied:
+            cursor.execute("DELETE FROM title_countries WHERE title_id=?", (title_id,))
+            cursor.executemany(
+                "INSERT INTO title_countries (title_id, country_code) VALUES (?, ?)",
+                [(title_id, code) for code in country_codes],
+            )
 
         if owns_conn:
             conn.commit()
@@ -501,6 +538,10 @@ def get_title_cache(identities):
             for row in cursor.fetchall():
                 item = dict(row)
                 cache[(item["type"], item["tmdb_id"])] = item
+        by_id = {item["id"]: item for item in cache.values()}
+        country_map = _fetch_country_map(cursor, list(by_id))
+        for title_id, item in by_id.items():
+            item["origin_countries"] = country_map.get(title_id, [])
         return cache
     finally:
         conn.close()
@@ -974,7 +1015,7 @@ def purge_all_titles():
         conn.close()
 
 
-def _build_title_filters(provider=None, title_type=None, search=None, year=None, min_rating=None,
+def _build_title_filters(provider=None, title_type=None, search=None, region=None, min_rating=None,
                          watch_status=None):
     filters = []
     params = []
@@ -996,9 +1037,16 @@ def _build_title_filters(provider=None, title_type=None, search=None, year=None,
     if search:
         filters.append("(t.title LIKE ? OR t.original_title LIKE ?)")
         params.extend([f"%{search}%", f"%{search}%"])
-    if year:
-        filters.append("substr(t.release_date,1,4) = ?")
-        params.append(str(year))
+    if region:
+        filters.append("""
+            EXISTS (
+                SELECT 1
+                FROM title_countries country_filter
+                WHERE country_filter.title_id = t.id
+                  AND country_filter.country_code = ?
+            )
+        """)
+        params.append(region.upper())
     if min_rating is not None:
         filters.append("t.imdb_rating >= ?")
         params.append(min_rating)
@@ -1034,8 +1082,27 @@ def _fetch_provider_map(cursor, title_ids):
     return provider_map
 
 
+def _fetch_country_map(cursor, title_ids):
+    if not title_ids:
+        return {}
+    placeholders = ",".join("?" for _ in title_ids)
+    cursor.execute(
+        f"""
+        SELECT title_id, country_code
+        FROM title_countries
+        WHERE title_id IN ({placeholders})
+        ORDER BY country_code
+        """,
+        title_ids,
+    )
+    country_map = {title_id: [] for title_id in title_ids}
+    for row in cursor.fetchall():
+        country_map[row["title_id"]].append(row["country_code"])
+    return country_map
+
+
 def get_titles(page=1, limit=20, provider=None, sort_by="release_date", order="desc",
-               title_type=None, search=None, year=None, min_rating=None, watch_status=None):
+               title_type=None, search=None, region=None, min_rating=None, watch_status=None):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -1057,7 +1124,7 @@ def get_titles(page=1, limit=20, provider=None, sort_by="release_date", order="d
             provider=provider,
             title_type=title_type,
             search=search,
-            year=year,
+            region=region,
             min_rating=min_rating,
             watch_status=watch_status,
         )
@@ -1075,8 +1142,10 @@ def get_titles(page=1, limit=20, provider=None, sort_by="release_date", order="d
         titles = [dict(row) for row in cursor.fetchall()]
 
         provider_map = _fetch_provider_map(cursor, [title["id"] for title in titles])
+        country_map = _fetch_country_map(cursor, [title["id"] for title in titles])
         for title in titles:
             title["providers"] = provider_map.get(title["id"], [])
+            title["origin_countries"] = country_map.get(title["id"], [])
 
         count_query = f"SELECT COUNT(*) {from_sql} {where_sql}"
         cursor.execute(count_query, params)
@@ -1118,6 +1187,7 @@ def get_title_detail(title_id):
             ORDER BY provider_name
         """, (title_id,))
         title['providers'] = [r['provider_name'] for r in cursor.fetchall()]
+        title['origin_countries'] = _fetch_country_map(cursor, [title_id]).get(title_id, [])
         return title
     finally:
         conn.close()
@@ -1210,12 +1280,14 @@ def get_stats():
         pending_count = cursor.fetchone()["count"]
 
         cursor.execute(f"""
-            SELECT DISTINCT substr(t.release_date,1,4) as y
-            FROM titles t
-            WHERE t.release_date != '' AND {TRUSTED_RATING_CONDITION_T}
-            ORDER BY y DESC
+            SELECT tc.country_code, COUNT(DISTINCT tc.title_id) AS count
+            FROM title_countries tc
+            JOIN titles t ON t.id = tc.title_id
+            WHERE {TRUSTED_RATING_CONDITION_T}
+            GROUP BY tc.country_code
+            ORDER BY count DESC, tc.country_code
         """)
-        years = [row["y"] for row in cursor.fetchall() if row["y"]]
+        regions = [dict(row) for row in cursor.fetchall()]
 
         cursor.execute(f"""
             SELECT p.watch_status, COUNT(*) AS count
@@ -1243,9 +1315,58 @@ def get_stats():
             "last_update": last_update,
             "last_synced_at": last_synced_at,
             "pending": pending_count,
-            "years": years,
+            "regions": regions,
             "by_status": by_status,
             "latest_sync": dict(latest_sync) if latest_sync else None,
         }
+    finally:
+        conn.close()
+
+
+def get_titles_missing_countries(limit=0):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        query = """
+            SELECT id, tmdb_id, type, title
+            FROM titles
+            WHERE countries_synced_at IS NULL
+            ORDER BY id
+        """
+        params = []
+        if limit and limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def persist_title_countries(items):
+    if not items:
+        return 0
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        synced_at = _utc_now()
+        for item in items:
+            title_id = item["id"]
+            codes = _normalize_country_codes(item.get("origin_countries"))
+            cursor.execute("DELETE FROM title_countries WHERE title_id=?", (title_id,))
+            cursor.executemany(
+                "INSERT INTO title_countries (title_id, country_code) VALUES (?, ?)",
+                [(title_id, code) for code in codes],
+            )
+            cursor.execute(
+                "UPDATE titles SET countries_synced_at=? WHERE id=?",
+                (item.get("countries_synced_at") or synced_at, title_id),
+            )
+        conn.commit()
+        return len(items)
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()

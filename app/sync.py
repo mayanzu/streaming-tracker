@@ -87,6 +87,9 @@ def _merge_candidate(target, incoming):
     target["discovery_channels"] = list(dict.fromkeys(
         (target.get("discovery_channels") or []) + (incoming.get("discovery_channels") or [])
     ))
+    target["origin_countries"] = list(dict.fromkeys(
+        (target.get("origin_countries") or []) + (incoming.get("origin_countries") or [])
+    ))
     for field in ("title", "original_title", "overview", "release_date", "poster_url", "imdb_id"):
         if not target.get(field) and incoming.get(field):
             target[field] = incoming[field]

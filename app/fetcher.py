@@ -66,6 +66,23 @@ def _poster_url(path):
     return f"https://image.tmdb.org/t/p/w500{path}" if path else None
 
 
+def _normalize_country_codes(values):
+    codes = []
+    for value in values or []:
+        code = value.get("iso_3166_1") if isinstance(value, dict) else value
+        code = str(code or "").strip().upper()
+        if len(code) == 2 and code.isalpha() and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _origin_countries_from_details(details):
+    countries = _normalize_country_codes(details.get("origin_country"))
+    if countries:
+        return countries
+    return _normalize_country_codes(details.get("production_countries"))
+
+
 async def translate_to_chinese(text):
     if not text:
         return text
@@ -240,6 +257,9 @@ def _merge_candidate(target, incoming):
     target["discovery_channels"] = list(dict.fromkeys(
         (target.get("discovery_channels") or []) + (incoming.get("discovery_channels") or [])
     ))
+    target["origin_countries"] = list(dict.fromkeys(
+        (target.get("origin_countries") or []) + (incoming.get("origin_countries") or [])
+    ))
     for field in ("title", "original_title", "overview", "release_date", "poster_url"):
         if not target.get(field) and incoming.get(field):
             target[field] = incoming[field]
@@ -262,6 +282,7 @@ def _candidate_from_item(item, media_type, provider_name, region, channel):
         "providers": [provider_name],
         "provider_regions": {provider_name: [region]},
         "discovery_channels": [channel],
+        "origin_countries": _normalize_country_codes(item.get("origin_country")),
     }
 
 
@@ -459,6 +480,7 @@ def _is_fresh(cached):
         or cached.get("rating_source") not in TRUSTED_RATING_SOURCES
         or cached.get("imdb_rating") is None
         or float(cached["imdb_rating"]) < MIN_IMDB_RATING
+        or not cached.get("countries_synced_at")
     ):
         return False
     value = cached.get("last_synced_at") if cached else None
@@ -506,11 +528,14 @@ async def _fetch_details(candidate, client):
         )
         title["poster_url"] = _poster_url(_localized_poster_path(details)) or title.get("poster_url")
         title["imdb_id"] = (details.get("external_ids") or {}).get("imdb_id")
+        title["origin_countries"] = _origin_countries_from_details(details)
         if not title["overview"]:
             english = await fetch_tmdb(endpoint, {"language": "en-US"}, client=client)
             if english.get("overview"):
                 title["overview"] = await translate_to_chinese(english["overview"])
-        title["last_synced_at"] = datetime.now(timezone.utc).isoformat()
+        synced_at = datetime.now(timezone.utc).isoformat()
+        title["last_synced_at"] = synced_at
+        title["countries_synced_at"] = synced_at
         return title
     except Exception as exc:
         title["enrichment_error"] = f"{type(exc).__name__}: {exc}"

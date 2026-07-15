@@ -106,14 +106,14 @@ def list_titles(
     order: str = Query("desc", pattern="^(asc|desc)$"),
     title_type: str = Query(None, alias="type", pattern="^(movie|tv)?$"),
     search: str = Query(None),
-    year: str = Query(None),
+    region: str = Query(None, pattern="^[A-Za-z]{2}$"),
     min_rating: float = Query(None, ge=0, le=10),
     watch_status: str = Query(None, pattern="^(watchlist|watching|watched)?$"),
 ):
     return get_titles(
         page=page, limit=limit, provider=provider,
         sort_by=sort_by, order=order, title_type=title_type,
-        search=search, year=year, min_rating=min_rating,
+        search=search, region=region, min_rating=min_rating,
         watch_status=watch_status,
     )
 

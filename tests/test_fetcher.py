@@ -79,6 +79,29 @@ class FetcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(candidate["poster_url"])
         self.assertEqual(candidate["tmdb_id"], 1)
 
+    def test_tv_candidate_preserves_origin_country(self):
+        candidate = fetcher._candidate_from_item(
+            {"id": 2, "name": "日剧", "origin_country": ["jp", "US"]},
+            "tv", "max", "TW", "tv_current_airing",
+        )
+        self.assertEqual(candidate["origin_countries"], ["JP", "US"])
+
+    def test_detail_country_prefers_tv_origin_country(self):
+        details = {
+            "origin_country": ["JP"],
+            "production_countries": [{"iso_3166_1": "US"}],
+        }
+        self.assertEqual(fetcher._origin_countries_from_details(details), ["JP"])
+
+    def test_detail_country_falls_back_to_movie_production_country(self):
+        details = {
+            "production_countries": [
+                {"iso_3166_1": "kr"},
+                {"iso_3166_1": "US"},
+            ],
+        }
+        self.assertEqual(fetcher._origin_countries_from_details(details), ["KR", "US"])
+
     async def test_imdb_scan_keeps_only_requested_ids(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "ratings.tsv"

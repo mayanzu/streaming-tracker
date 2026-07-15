@@ -24,6 +24,8 @@ def title_payload(**overrides):
         "added_date": "2026-06-01",
         "providers": ["max"],
         "provider_regions": {"max": ["TW", "HK"]},
+        "origin_countries": ["JP"],
+        "countries_synced_at": "2026-07-15T00:00:00+00:00",
     }
     payload.update(overrides)
     return payload
@@ -130,6 +132,43 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(all_titles["titles"]), 2)
         self.assertEqual(max_titles["total"], 1)
         self.assertEqual(max_titles["titles"][0]["tmdb_id"], 100)
+
+    def test_country_rows_are_replaced_when_title_is_updated(self):
+        database.insert_title(title_payload(origin_countries=["JP", "US"]))
+        database.insert_title(title_payload(origin_countries=["KR"]))
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT country_code FROM title_countries ORDER BY country_code"
+            ).fetchall()
+        self.assertEqual([row["country_code"] for row in rows], ["KR"])
+
+    def test_region_filter_and_stats_use_normalized_country_table(self):
+        database.insert_title(title_payload(origin_countries=["JP"]))
+        database.insert_title(title_payload(
+            tmdb_id=101,
+            imdb_id="tt0000101",
+            title="韩国作品",
+            origin_countries=["KR"],
+        ))
+
+        japanese = database.get_titles(limit=20, region="jp")
+        stats = database.get_stats()
+        region_counts = {
+            item["country_code"]: item["count"] for item in stats["regions"]
+        }
+
+        self.assertEqual(japanese["total"], 1)
+        self.assertEqual(japanese["titles"][0]["tmdb_id"], 100)
+        self.assertEqual(japanese["titles"][0]["origin_countries"], ["JP"])
+        self.assertEqual(region_counts, {"JP": 1, "KR": 1})
+
+    def test_region_filter_uses_correlated_exists(self):
+        where_sql, params = database._build_title_filters(region="jp")
+
+        self.assertIn("EXISTS", where_sql)
+        self.assertIn("country_filter.title_id = t.id", where_sql)
+        self.assertEqual(params, ["JP"])
 
 
 if __name__ == "__main__":

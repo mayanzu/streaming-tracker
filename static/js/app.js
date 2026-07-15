@@ -6,7 +6,7 @@ const state = {
     order: 'desc',
     type: '',
     search: '',
-    year: '',
+    region: '',
     rating: 0,
     watchStatus: '',
     loading: false,
@@ -22,6 +22,21 @@ const providerNames = {
     netflix: 'Netflix', disney: 'Disney+', max: 'Max',
     amazon: 'Prime Video', apple: 'Apple TV+', hulu: 'Hulu',
 };
+const regionNames = {
+    CN: '中国大陆（国产）', HK: '中国香港（港剧/港影）', TW: '中国台湾（台剧/台影）',
+    JP: '日本（日剧/日影）', KR: '韩国（韩剧/韩影）', US: '美国（美剧/美影）',
+    GB: '英国（英剧/英影）', CA: '加拿大', FR: '法国', DE: '德国',
+    ES: '西班牙', IT: '意大利', IN: '印度', TH: '泰国', AU: '澳大利亚',
+};
+const regionShortNames = {
+    CN: '中国大陆', HK: '中国香港', TW: '中国台湾', JP: '日本', KR: '韩国',
+    US: '美国', GB: '英国', CA: '加拿大', FR: '法国', DE: '德国', ES: '西班牙',
+    IT: '意大利', IN: '印度', TH: '泰国', AU: '澳大利亚',
+};
+const regionPriority = ['CN', 'HK', 'TW', 'JP', 'KR', 'US', 'GB', 'CA', 'FR', 'DE', 'ES', 'IT', 'IN', 'TH', 'AU'];
+const regionDisplayNames = typeof Intl.DisplayNames === 'function'
+    ? new Intl.DisplayNames(['zh-CN'], { type: 'region' })
+    : null;
 const watchStatusNames = {
     watchlist: '想看', watching: '在看', watched: '已看',
 };
@@ -117,6 +132,20 @@ function ratingTier(rating) {
     return 'fair';
 }
 
+function primaryRegionLabel(countries, compact = false) {
+    const code = Array.isArray(countries) ? countries[0] : countries;
+    if (!code) return '';
+    return displayRegionName(code, compact);
+}
+
+function displayRegionName(code, compact = false) {
+    const normalized = String(code || '').toUpperCase();
+    const custom = compact ? regionShortNames[normalized] : regionNames[normalized];
+    if (custom) return custom;
+    const localized = regionDisplayNames?.of(normalized);
+    return localized && localized !== normalized ? localized : '其他地区';
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     hydrateStateFromUrl();
     setupEvents();
@@ -135,7 +164,7 @@ function hydrateStateFromUrl() {
     state.provider = params.get('provider') || '';
     state.type = valid(params.get('type') || '', ['', 'movie', 'tv']);
     state.search = (params.get('q') || '').slice(0, 100);
-    state.year = /^\d{4}$/.test(params.get('year') || '') ? params.get('year') : '';
+    state.region = /^[A-Za-z]{2}$/.test(params.get('region') || '') ? params.get('region').toUpperCase() : '';
     state.rating = valid(params.get('rating') || '0', ['0', '7', '7.5', '8'], '0');
     state.rating = Number(state.rating);
     state.sort_by = valid(params.get('sort') || 'release_date', ['rating', 'release_date'], 'release_date');
@@ -147,7 +176,7 @@ function updateUrl() {
     if (state.search) params.set('q', state.search);
     if (state.provider) params.set('provider', state.provider);
     if (state.type) params.set('type', state.type);
-    if (state.year) params.set('year', state.year);
+    if (state.region) params.set('region', state.region);
     if (state.rating) params.set('rating', String(state.rating));
     if (state.sort_by !== 'release_date') params.set('sort', state.sort_by);
     if (state.watchStatus) params.set('status', state.watchStatus);
@@ -158,7 +187,7 @@ function updateUrl() {
 function syncControlsFromState() {
     document.getElementById('search-input').value = state.search;
     document.getElementById('clear-search').classList.toggle('hidden', !state.search);
-    document.getElementById('year-filter').value = state.year;
+    document.getElementById('region-filter').value = state.region;
     document.getElementById('rating-filter').value = String(state.rating);
     document.getElementById('sort-filter').value = state.sort_by;
     document.querySelectorAll('#type-filters [data-type]').forEach(button => {
@@ -186,15 +215,30 @@ async function loadStats() {
             document.getElementById(`status-count-${status}`).textContent = Number(byStatus[status] || 0).toLocaleString();
         });
 
-        const select = document.getElementById('year-filter');
-        const current = state.year;
-        select.innerHTML = '<option value="">全部年份</option>';
-        (statsData.years || []).forEach(year => {
+        const select = document.getElementById('region-filter');
+        const current = state.region;
+        select.innerHTML = '<option value="">全部地区</option>';
+        const regions = [...(statsData.regions || [])].sort((a, b) => {
+            const aCode = a.country_code;
+            const bCode = b.country_code;
+            const aPriority = regionPriority.indexOf(aCode);
+            const bPriority = regionPriority.indexOf(bCode);
+            if (aPriority !== -1 || bPriority !== -1) {
+                if (aPriority === -1) return 1;
+                if (bPriority === -1) return -1;
+                return aPriority - bPriority;
+            }
+            return displayRegionName(aCode).localeCompare(displayRegionName(bCode), 'zh-CN');
+        });
+        regions.forEach(region => {
             const option = document.createElement('option');
-            option.value = year;
-            option.textContent = year;
+            option.value = region.country_code;
+            option.textContent = `${displayRegionName(region.country_code)} · ${Number(region.count || 0).toLocaleString()}`;
             select.appendChild(option);
         });
+        if (current && !regions.some(region => region.country_code === current)) {
+            select.appendChild(new Option(displayRegionName(current), current));
+        }
         select.value = current;
     } catch (error) {
         showToast('概览数据暂时无法加载', 'warn');
@@ -338,7 +382,7 @@ async function loadTitles() {
         if (state.provider) params.set('provider', state.provider);
         if (state.type) params.set('type', state.type);
         if (state.search) params.set('search', state.search);
-        if (state.year) params.set('year', state.year);
+        if (state.region) params.set('region', state.region);
         if (state.rating > 0) params.set('min_rating', String(state.rating));
         if (state.watchStatus) params.set('watch_status', state.watchStatus);
 
@@ -405,6 +449,7 @@ function createTitleCard(title) {
     const providers = (title.providers || []).map(provider => `
         <span class="card-provider"><span class="p-dot" style="background:${providerColors[provider] || '#7f7d75'}"></span>${escapeHtml(providerNames[provider] || provider)}</span>`).join('');
     const status = title.watch_status || '';
+    const region = primaryRegionLabel(title.origin_countries, true);
     card.innerHTML = `
         <button class="card-main" type="button" aria-label="查看 ${escapeHtml(title.title)} 详情">
             <div class="poster-wrap">
@@ -415,7 +460,7 @@ function createTitleCard(title) {
             </div>
             <div class="card-info">
                 <h2 class="card-title">${escapeHtml(title.title)}</h2>
-                <div class="card-meta"><span>${escapeHtml(title.release_date || '日期待定')}</span></div>
+                <div class="card-meta"><span>${escapeHtml(title.release_date || '日期待定')}</span>${region ? `<span>${escapeHtml(region)}</span>` : ''}</div>
                 <p class="card-overview">${escapeHtml(title.overview || '暂无剧情简介')}</p>
                 <div class="card-providers">${providers}</div>
             </div>
@@ -497,6 +542,7 @@ function renderDetail(title) {
     const status = title.watch_status || '';
     const imdbLink = title.imdb_id ? `<a class="modal-link" href="https://www.imdb.com/title/${encodeURIComponent(title.imdb_id)}/" target="_blank" rel="noopener noreferrer">在 IMDb 查看 ${externalIcon()}</a>` : '';
     const tmdbType = title.type === 'movie' ? 'movie' : 'tv';
+    const region = primaryRegionLabel(title.origin_countries, true);
     document.getElementById('detail-content').innerHTML = `
         <div class="modal-hero">
             <div class="modal-hero-bg" style="background-image:url('${escapeHtml(poster)}')"></div>
@@ -510,6 +556,7 @@ function renderDetail(title) {
             <div class="modal-info">
                 <div class="meta-tags">
                     <span class="meta-tag">${title.type === 'movie' ? '电影' : '剧集'}</span>
+                    ${region ? `<span class="meta-tag">${escapeHtml(region)}</span>` : ''}
                     <span class="meta-tag">${escapeHtml(title.release_date || '日期待定')}</span>
                     <span class="meta-tag">${Number(title.rating_votes || 0).toLocaleString()} 票</span>
                 </div>
@@ -580,7 +627,7 @@ function closeModal() {
 }
 
 function hasActiveFilters() {
-    return Boolean(state.provider || state.type || state.search || state.year || state.rating || state.watchStatus);
+    return Boolean(state.provider || state.type || state.search || state.region || state.rating || state.watchStatus);
 }
 
 function resetAndLoad() {
@@ -601,7 +648,7 @@ function clearAllFilters() {
     state.provider = '';
     state.type = '';
     state.search = '';
-    state.year = '';
+    state.region = '';
     state.rating = 0;
     state.watchStatus = '';
     resetAndLoad();
@@ -613,7 +660,7 @@ function renderActiveFilters() {
     if (state.search) chips.push(['关键词', state.search, '', () => { state.search = ''; resetAndLoad(); }]);
     if (state.provider) chips.push(['平台', providerNames[state.provider] || state.provider, providerColors[state.provider], () => { state.provider = ''; resetAndLoad(); }]);
     if (state.type) chips.push(['类型', state.type === 'movie' ? '电影' : '剧集', '', () => { state.type = ''; resetAndLoad(); }]);
-    if (state.year) chips.push(['年份', state.year, '', () => { state.year = ''; resetAndLoad(); }]);
+    if (state.region) chips.push(['地区', displayRegionName(state.region), '', () => { state.region = ''; resetAndLoad(); }]);
     if (state.rating) chips.push(['评分', `${state.rating} 分以上`, '', () => { state.rating = 0; resetAndLoad(); }]);
     if (!chips.length) {
         container.classList.add('hidden');
@@ -732,7 +779,7 @@ function setupEvents() {
         searchInput.focus();
         resetAndLoad();
     });
-    document.getElementById('year-filter').addEventListener('change', event => { state.year = event.target.value; resetAndLoad(); });
+    document.getElementById('region-filter').addEventListener('change', event => { state.region = event.target.value; resetAndLoad(); });
     document.getElementById('rating-filter').addEventListener('change', event => { state.rating = Number(event.target.value); resetAndLoad(); });
     document.getElementById('sort-filter').addEventListener('change', event => { state.sort_by = event.target.value; resetAndLoad(); });
 
