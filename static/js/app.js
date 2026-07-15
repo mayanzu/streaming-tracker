@@ -50,6 +50,14 @@ let syncPollTimer = null;
 let bootstrapPollTimer = null;
 let previousFocus = null;
 let currentDetail = null;
+let displayMediaQuery = null;
+let displayMediaQueryHandler = null;
+let displayUpdateFrame = null;
+let displayImageSignature = '';
+let observedDisplayDpr = 1;
+
+const CARD_POSTER_SIZES = '(max-width: 680px) 46vw, (max-width: 900px) 30vw, (max-width: 1180px) 23vw, (max-width: 1599px) 18vw, (max-width: 2099px) 15vw, (max-width: 2499px) 13vw, 11vw';
+const DETAIL_POSTER_SIZES = '(max-width: 680px) 1px, (max-width: 900px) 150px, 180px';
 
 const posterFallback = `data:image/svg+xml,${encodeURIComponent(`
 <svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750">
@@ -125,6 +133,108 @@ function sanitizeUrl(url) {
     return '';
 }
 
+function tmdbPosterUrl(url, size) {
+    const safeUrl = sanitizeUrl(url);
+    if (!safeUrl || safeUrl.startsWith('data:image/')) return safeUrl;
+    try {
+        const parsed = new URL(safeUrl, window.location.origin);
+        const match = parsed.pathname.match(/^\/t\/p\/(?:w\d+|original)(\/.*)$/);
+        if (!match) return safeUrl;
+        return `${parsed.origin}/t/p/${size}${match[1]}${parsed.search}`;
+    } catch (_) {
+        return safeUrl;
+    }
+}
+
+function responsivePosterAttributes(url, sizes) {
+    const poster = sanitizeUrl(url) || posterFallback;
+    if (poster.startsWith('data:image/')) return `src="${escapeHtml(poster)}"`;
+    const candidates = [342, 500, 780]
+        .map(width => `${tmdbPosterUrl(poster, `w${width}`)} ${width}w`)
+        .join(', ');
+    return `src="${escapeHtml(tmdbPosterUrl(poster, 'w500'))}" srcset="${escapeHtml(candidates)}" sizes="${escapeHtml(sizes)}" data-responsive-poster`;
+}
+
+function handlePosterError(image) {
+    image.removeAttribute('srcset');
+    image.removeAttribute('sizes');
+    image.removeAttribute('data-responsive-poster');
+    image.onerror = null;
+    image.src = posterFallback;
+}
+window.handlePosterError = handlePosterError;
+
+function displayLayoutBucket(width) {
+    if (width >= 2500) return 'ultra';
+    if (width >= 2100) return 'wide';
+    if (width >= 1600) return 'large';
+    if (width > 1180) return 'desktop';
+    if (width > 900) return 'compact';
+    if (width > 680) return 'tablet';
+    return 'mobile';
+}
+
+function refreshResponsivePosters() {
+    document.querySelectorAll('img[data-responsive-poster]').forEach(image => {
+        const srcset = image.getAttribute('srcset');
+        const sizes = image.getAttribute('sizes');
+        if (sizes) image.setAttribute('sizes', sizes);
+        if (srcset) image.setAttribute('srcset', srcset);
+    });
+}
+
+function bindDisplayDensityListener(dpr) {
+    if (!window.matchMedia) return;
+    if (displayMediaQuery && displayMediaQueryHandler) {
+        if (displayMediaQuery.removeEventListener) displayMediaQuery.removeEventListener('change', displayMediaQueryHandler);
+        else displayMediaQuery.removeListener(displayMediaQueryHandler);
+    }
+    displayMediaQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
+    displayMediaQueryHandler = () => scheduleDisplayAdaptation(true);
+    if (displayMediaQuery.addEventListener) displayMediaQuery.addEventListener('change', displayMediaQueryHandler, { once: true });
+    else displayMediaQuery.addListener(displayMediaQueryHandler);
+}
+
+function applyDisplayAdaptation(forceImageRefresh = false) {
+    displayUpdateFrame = null;
+    const viewport = window.visualViewport;
+    const width = Math.round(viewport?.width || window.innerWidth || document.documentElement.clientWidth);
+    const height = Math.round(viewport?.height || window.innerHeight || document.documentElement.clientHeight);
+    const dpr = Math.max(1, Math.round((window.devicePixelRatio || 1) * 100) / 100);
+    const root = document.documentElement;
+    const bucket = displayLayoutBucket(width);
+    const imageSignature = `${dpr}:${bucket}`;
+    observedDisplayDpr = dpr;
+
+    root.style.setProperty('--device-pixel-ratio', String(dpr));
+    root.style.setProperty('--viewport-width', `${width}px`);
+    root.style.setProperty('--viewport-height', `${height}px`);
+    root.dataset.pixelDensity = dpr >= 2 ? 'high' : dpr >= 1.25 ? 'medium' : 'standard';
+    root.dataset.viewport = bucket;
+
+    if (forceImageRefresh || imageSignature !== displayImageSignature) {
+        displayImageSignature = imageSignature;
+        refreshResponsivePosters();
+        bindDisplayDensityListener(dpr);
+    }
+}
+
+function scheduleDisplayAdaptation(forceImageRefresh = false) {
+    if (displayUpdateFrame) cancelAnimationFrame(displayUpdateFrame);
+    displayUpdateFrame = requestAnimationFrame(() => applyDisplayAdaptation(forceImageRefresh));
+}
+
+function setupDisplayAdaptation() {
+    applyDisplayAdaptation();
+    window.addEventListener('resize', () => scheduleDisplayAdaptation(), { passive: true });
+    window.visualViewport?.addEventListener('resize', () => scheduleDisplayAdaptation(), { passive: true });
+    window.addEventListener('pageshow', () => scheduleDisplayAdaptation(true));
+    window.setInterval(() => {
+        const currentDpr = Math.max(1, Math.round((window.devicePixelRatio || 1) * 100) / 100);
+        if (currentDpr !== observedDisplayDpr) scheduleDisplayAdaptation(true);
+    }, 750);
+}
+
 function ratingTier(rating) {
     if (!rating || rating <= 0) return null;
     if (rating >= 8) return 'great';
@@ -148,6 +258,7 @@ function displayRegionName(code, compact = false) {
 
 document.addEventListener('DOMContentLoaded', async () => {
     hydrateStateFromUrl();
+    setupDisplayAdaptation();
     setupEvents();
     setupInfiniteScroll();
     setupBackToTop();
@@ -453,7 +564,7 @@ function createTitleCard(title) {
     card.innerHTML = `
         <button class="card-main" type="button" aria-label="查看 ${escapeHtml(title.title)} 详情">
             <div class="poster-wrap">
-                <img src="${escapeHtml(poster)}" alt="${escapeHtml(title.title)} 海报" loading="lazy" decoding="async" onerror="this.src=window.posterFallback">
+                <img ${responsivePosterAttributes(poster, CARD_POSTER_SIZES)} alt="${escapeHtml(title.title)} 海报" loading="lazy" decoding="async" onerror="window.handlePosterError(this)">
                 ${status ? `<span class="status-badge" data-status="${status}">${watchStatusNames[status]}</span>` : ''}
                 <span class="poster-rating">${rating ? rating.toFixed(1) : '—'}<small>IMDb</small></span>
                 <span class="type-tag">${title.type === 'movie' ? '电影' : '剧集'}</span>
@@ -536,6 +647,7 @@ function renderDetail(title) {
     const rating = Number(title.imdb_rating) || 0;
     const tier = ratingTier(rating);
     const poster = sanitizeUrl(title.poster_url) || posterFallback;
+    const detailBackdrop = tmdbPosterUrl(poster, 'w780');
     const original = title.original_title && title.original_title !== title.title ? title.original_title : '';
     const providers = (title.providers || []).map(provider => `
         <span class="modal-provider"><span class="p-dot" style="background:${providerColors[provider] || '#7f7d75'}"></span>${escapeHtml(providerNames[provider] || provider)}</span>`).join('');
@@ -545,14 +657,14 @@ function renderDetail(title) {
     const region = primaryRegionLabel(title.origin_countries, true);
     document.getElementById('detail-content').innerHTML = `
         <div class="modal-hero">
-            <div class="modal-hero-bg" style="background-image:url('${escapeHtml(poster)}')"></div>
+            <div class="modal-hero-bg" style="background-image:url('${escapeHtml(detailBackdrop)}')"></div>
             <div class="modal-hero-content">
                 <div class="modal-hero-rating"><div class="rating-num">${rating ? rating.toFixed(1) : '—'}</div>${tier ? `<div class="rating-tier" data-tier="${tier}">IMDb · ${ratingTierLabels[tier]}</div>` : ''}</div>
                 <div class="modal-hero-title"><h2 id="modal-title">${escapeHtml(title.title)}</h2>${original ? `<p>${escapeHtml(original)}</p>` : ''}</div>
             </div>
         </div>
         <div class="modal-body">
-            <div class="modal-poster"><img src="${escapeHtml(poster)}" alt="${escapeHtml(title.title)} 海报" onerror="this.src=window.posterFallback"></div>
+            <div class="modal-poster"><img ${responsivePosterAttributes(poster, DETAIL_POSTER_SIZES)} alt="${escapeHtml(title.title)} 海报" decoding="async" onerror="window.handlePosterError(this)"></div>
             <div class="modal-info">
                 <div class="meta-tags">
                     <span class="meta-tag">${title.type === 'movie' ? '电影' : '剧集'}</span>

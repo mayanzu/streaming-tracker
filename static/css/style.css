@@ -387,6 +387,21 @@ main { width: min(100%, var(--content)); margin: 0 auto; padding: 0 var(--pad) 1
 @keyframes menu-in { from { opacity: 0; transform: scale(.94) translateY(-4px); } }
 @keyframes toast-in { from { opacity: 0; transform: translateY(12px); } }
 
+@media (min-width: 1600px) {
+    :root { --content: 1680px; }
+    .titles-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+
+@media (min-width: 2100px) {
+    :root { --content: 2080px; }
+    .titles-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+}
+
+@media (min-width: 2500px) {
+    :root { --content: 2440px; }
+    .titles-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+}
+
 @media (max-width: 1180px) {
     .titles-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .overview-stats div { min-width: 94px; padding-inline: 15px; }
