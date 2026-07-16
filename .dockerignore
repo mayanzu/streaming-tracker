@@ -13,7 +13,6 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
-!data/tracker.db
 *.tsv
 *.tsv.gz
 *.log

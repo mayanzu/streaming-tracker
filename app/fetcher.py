@@ -12,6 +12,7 @@ from app.config import (
     DEFAULT_PROVIDER_REGIONS,
     DETAIL_REFRESH_DAYS,
     DISCOVER_CONCURRENCY,
+    ENRICH_BATCH_SIZE,
     ENRICH_CONCURRENCY,
     HTTP_RETRIES,
     MIN_IMDB_RATING,
@@ -558,13 +559,49 @@ async def enrich_titles(candidates, cached_titles=None, progress_callback=None):
         else:
             needs_details.append((candidate, cached))
 
+    if not needs_details:
+        stats["qualified"] = len(qualified)
+        if candidates:
+            await _notify_progress(
+                progress_callback,
+                phase="qualified",
+                provider=None,
+                provider_index=0,
+                provider_total=0,
+                enrich_completed=0,
+                enrich_total=0,
+                provider_qualified=len(qualified),
+                stats=dict(stats),
+            )
+        return {"titles": qualified, "pending": pending, "stats": stats}
+
     semaphore = asyncio.Semaphore(ENRICH_CONCURRENCY)
+    enrich_total = len(needs_details)
+    enriched = []
     async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0)) as client:
         async def fetch_one(candidate):
             async with semaphore:
                 return await _fetch_details(candidate, client)
 
-        enriched = await asyncio.gather(*(fetch_one(candidate) for candidate, _ in needs_details))
+        for batch_start in range(0, enrich_total, ENRICH_BATCH_SIZE):
+            batch = needs_details[batch_start:batch_start + ENRICH_BATCH_SIZE]
+            enriched.extend(
+                await asyncio.gather(*(fetch_one(candidate) for candidate, _ in batch))
+            )
+            enrich_completed = batch_start + len(batch)
+            if enrich_completed < enrich_total:
+                await _notify_progress(
+                    progress_callback,
+                    phase="enriching",
+                    provider=None,
+                    provider_index=enrich_completed,
+                    provider_total=enrich_total,
+                    enrich_completed=enrich_completed,
+                    enrich_total=enrich_total,
+                    provider_qualified=len(qualified),
+                    stats=dict(stats),
+                )
+
         imdb_ids = {title.get("imdb_id") for title in enriched if title.get("imdb_id")}
         ratings, rating_errors = await get_imdb_ratings(imdb_ids, client=client)
 
@@ -621,11 +658,14 @@ async def enrich_titles(candidates, cached_titles=None, progress_callback=None):
         progress_callback,
         phase="qualified",
         provider=None,
-        provider_index=len(PROVIDERS),
-        provider_total=len(PROVIDERS),
+        provider_index=enrich_total,
+        provider_total=enrich_total,
+        enrich_completed=enrich_total,
+        enrich_total=enrich_total,
         provider_qualified=len(qualified),
         stats=dict(stats),
     )
+
     return {"titles": qualified, "pending": pending, "stats": stats}
 
 

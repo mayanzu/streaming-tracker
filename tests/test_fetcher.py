@@ -8,6 +8,108 @@ from app import fetcher, imdb_data
 
 
 class FetcherTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _enrich_candidates(count):
+        return [
+            {
+                "tmdb_id": index,
+                "type": "movie",
+                "title": f"Title {index}",
+                "providers": ["netflix"],
+            }
+            for index in range(1, count + 1)
+        ]
+
+    async def test_enrich_titles_processes_batches_and_reports_progress(self):
+        rating_batches = []
+        progress_updates = []
+        detail_calls = []
+
+        async def fake_details(candidate, _client):
+            detail_calls.append(candidate["tmdb_id"])
+            title = dict(candidate)
+            title["imdb_id"] = f"tt{candidate['tmdb_id']:07d}"
+            return title
+
+        async def fake_ratings(imdb_ids, client=None):
+            rating_batches.append(sorted(imdb_ids))
+            return ({imdb_id: (8.0, 1000, "imdb") for imdb_id in imdb_ids}, {})
+
+        with (
+            patch.object(fetcher, "ENRICH_BATCH_SIZE", 2),
+            patch.object(fetcher, "_fetch_details", side_effect=fake_details),
+            patch.object(fetcher, "get_imdb_ratings", side_effect=fake_ratings),
+        ):
+            result = await fetcher.enrich_titles(
+                self._enrich_candidates(5),
+                progress_callback=progress_updates.append,
+            )
+
+        self.assertEqual([len(batch) for batch in rating_batches], [5])
+        self.assertEqual(
+            [item["enrich_completed"] for item in progress_updates],
+            [2, 4, 5],
+        )
+        self.assertEqual(detail_calls, [1, 2, 3, 4, 5])
+        self.assertEqual([item["enrich_total"] for item in progress_updates], [5, 5, 5])
+        self.assertEqual(
+            [item["phase"] for item in progress_updates],
+            ["enriching", "enriching", "qualified"],
+        )
+        self.assertEqual([item["tmdb_id"] for item in result["titles"]], [1, 2, 3, 4, 5])
+
+    async def test_enrich_titles_exact_batch_reports_once(self):
+        progress_updates = []
+
+        async def fake_details(candidate, _client):
+            title = dict(candidate)
+            title["imdb_id"] = f"tt{candidate['tmdb_id']:07d}"
+            return title
+
+        async def fake_ratings(imdb_ids, client=None):
+            return ({imdb_id: (8.0, 1000, "imdb") for imdb_id in imdb_ids}, {})
+
+        with (
+            patch.object(fetcher, "ENRICH_BATCH_SIZE", 2),
+            patch.object(fetcher, "_fetch_details", side_effect=fake_details),
+            patch.object(fetcher, "get_imdb_ratings", side_effect=fake_ratings),
+        ):
+            await fetcher.enrich_titles(
+                self._enrich_candidates(2),
+                progress_callback=progress_updates.append,
+            )
+
+        self.assertEqual(len(progress_updates), 1)
+        self.assertEqual(progress_updates[0]["enrich_completed"], 2)
+        self.assertEqual(progress_updates[0]["phase"], "qualified")
+
+    async def test_enrich_titles_empty_input_does_not_report_progress(self):
+        progress_updates = []
+
+        result = await fetcher.enrich_titles([], progress_callback=progress_updates.append)
+
+        self.assertEqual(result["titles"], [])
+        self.assertEqual(result["pending"], [])
+        self.assertEqual(progress_updates, [])
+
+    async def test_enrich_titles_without_progress_callback_remains_supported(self):
+        async def fake_details(candidate, _client):
+            title = dict(candidate)
+            title["imdb_id"] = "tt0000001"
+            return title
+
+        with (
+            patch.object(fetcher, "_fetch_details", side_effect=fake_details),
+            patch.object(
+                fetcher,
+                "get_imdb_ratings",
+                new=AsyncMock(return_value=({"tt0000001": (8.0, 1000, "imdb")}, {})),
+            ),
+        ):
+            result = await fetcher.enrich_titles(self._enrich_candidates(1))
+
+        self.assertEqual(len(result["titles"]), 1)
+
     async def test_adaptive_split_avoids_multi_day_truncation(self):
         async def fake_fetch(_endpoint, params=None, **_kwargs):
             start = date.fromisoformat(params["release_date.gte"])

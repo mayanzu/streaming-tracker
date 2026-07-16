@@ -73,6 +73,7 @@ MIN_IMDB_RATING = float(os.getenv("MIN_IMDB_RATING", "7.0"))
 MIN_IMDB_VOTES = int(os.getenv("MIN_IMDB_VOTES", "50"))
 OMDB_MIN_VOTES = int(os.getenv("OMDB_MIN_VOTES", "100"))
 ENRICH_CONCURRENCY = int(os.getenv("ENRICH_CONCURRENCY", "30"))
+ENRICH_BATCH_SIZE = max(1, int(os.getenv("ENRICH_BATCH_SIZE", "200")))
 DISCOVER_CONCURRENCY = int(os.getenv("DISCOVER_CONCURRENCY", "10"))
 WATCH_MONETIZATION_TYPES = os.getenv(
     "WATCH_MONETIZATION_TYPES", "flatrate,ads,free,rent,buy"
