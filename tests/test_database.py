@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -52,7 +53,7 @@ class DatabaseTests(unittest.TestCase):
         database.insert_title(title_payload())
         database.insert_title(title_payload(title="更新后的标题", added_date="2026-07-14"))
 
-        with self.connect() as connection:
+        with closing(self.connect()) as connection:
             row = connection.execute(
                 "SELECT title, added_date FROM titles WHERE tmdb_id=100 AND type='tv'"
             ).fetchone()
@@ -65,14 +66,15 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(outcome["skipped"], 0)
 
         old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
-        with self.connect() as connection:
+        with closing(self.connect()) as connection:
             connection.execute(
                 "UPDATE title_provider_availability SET last_seen_at=?", (old,)
             )
+            connection.commit()
         outcome = database.persist_sync_batch([], [], provider_stale_days=45)
         self.assertEqual(outcome["provider_expired"], 2)
 
-        with self.connect() as connection:
+        with closing(self.connect()) as connection:
             active = connection.execute(
                 "SELECT COUNT(*) FROM title_provider_availability WHERE is_active=1"
             ).fetchone()[0]
@@ -88,7 +90,7 @@ class DatabaseTests(unittest.TestCase):
         outcome = database.persist_sync_batch([], [pending])
         self.assertEqual(outcome["skipped"], 0)
 
-        with self.connect() as connection:
+        with closing(self.connect()) as connection:
             row = connection.execute(
                 "SELECT attempt_count, next_retry_at FROM pending_titles"
             ).fetchone()
@@ -97,7 +99,7 @@ class DatabaseTests(unittest.TestCase):
 
         outcome = database.persist_sync_batch([title_payload()], [])
         self.assertEqual(outcome["inserted"], 1)
-        with self.connect() as connection:
+        with closing(self.connect()) as connection:
             pending_count = connection.execute("SELECT COUNT(*) FROM pending_titles").fetchone()[0]
         self.assertEqual(pending_count, 0)
 
@@ -137,7 +139,7 @@ class DatabaseTests(unittest.TestCase):
         database.insert_title(title_payload(origin_countries=["JP", "US"]))
         database.insert_title(title_payload(origin_countries=["KR"]))
 
-        with self.connect() as connection:
+        with closing(self.connect()) as connection:
             rows = connection.execute(
                 "SELECT country_code FROM title_countries ORDER BY country_code"
             ).fetchall()
@@ -169,6 +171,48 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("EXISTS", where_sql)
         self.assertIn("country_filter.title_id = t.id", where_sql)
         self.assertEqual(params, ["JP"])
+
+    def test_provider_category_migration_merges_non_primary_platforms(self):
+        database.insert_title(title_payload(
+            providers=["tving", "viu", "Amazon Prime Video"],
+            provider_regions={
+                "tving": ["KR"],
+                "viu": ["SG"],
+                "Amazon Prime Video": ["US"],
+            },
+        ))
+        with closing(self.connect()) as connection:
+            connection.execute(
+                "DELETE FROM sync_state WHERE key='provider_categories_v1'"
+            )
+            connection.commit()
+
+        database.init_db()
+
+        with closing(self.connect()) as connection:
+            provider_names = {
+                row["provider_name"] for row in connection.execute(
+                    "SELECT provider_name FROM title_providers"
+                )
+            }
+            availability = {
+                (row["provider_name"], row["region"])
+                for row in connection.execute("""
+                    SELECT provider_name, region
+                    FROM title_provider_availability
+                    WHERE region != ''
+                """)
+            }
+            migration_count = connection.execute("""
+                SELECT COUNT(*) FROM sync_state
+                WHERE key='provider_categories_v1' AND value='complete'
+            """).fetchone()[0]
+
+        self.assertEqual(provider_names, {"amazon", "others"})
+        self.assertEqual(availability, {
+            ("amazon", "US"), ("others", "KR"), ("others", "SG"),
+        })
+        self.assertEqual(migration_count, 1)
 
 
 if __name__ == "__main__":

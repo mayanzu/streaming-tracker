@@ -37,10 +37,7 @@ PROVIDERS = {
     "hulu": 15,
 }
 
-MAIN_FILTER_PROVIDERS = tuple(
-    provider_name for provider_name in PROVIDERS
-    if provider_name != "hulu"
-)
+MAIN_FILTER_PROVIDERS = (*PROVIDERS, "others")
 
 CHINESE_FOCUSED_REGIONS = ("TW", "HK", "SG", "MY")
 GLOBAL_DISCOVERY_REGIONS = (*CHINESE_FOCUSED_REGIONS, "JP", "KR", "US", "GB", "CA", "AU")
@@ -67,6 +64,16 @@ PROVIDER_REGIONS = {
     provider_name: _provider_regions(provider_name)
     for provider_name in PROVIDERS
 }
+
+DISCOVER_ALL_PROVIDERS = os.getenv("DISCOVER_ALL_PROVIDERS", "true").lower() in (
+    "1", "true", "yes", "on",
+)
+_all_provider_regions = os.getenv("ALL_PROVIDER_WATCH_REGIONS", "")
+ALL_PROVIDER_WATCH_REGIONS = tuple(
+    region.strip().upper()
+    for region in _all_provider_regions.split(",")
+    if region.strip()
+) or GLOBAL_DISCOVERY_REGIONS
 
 # 评分和抓取策略
 MIN_IMDB_RATING = float(os.getenv("MIN_IMDB_RATING", "7.0"))

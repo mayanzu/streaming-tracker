@@ -17,10 +17,12 @@ const state = {
 const providerColors = {
     netflix: '#e06060', disney: '#7196dc', max: '#7483d9',
     amazon: '#55a9cf', apple: '#d8d8d2', hulu: '#67b98a',
+    others: '#8b8a84',
 };
 const providerNames = {
     netflix: 'Netflix', disney: 'Disney+', max: 'Max',
     amazon: 'Prime Video', apple: 'Apple TV+', hulu: 'Hulu',
+    others: '其他平台',
 };
 const regionNames = {
     CN: '中国大陆（国产）', HK: '中国香港（港剧/港影）', TW: '中国台湾（台剧/台影）',
@@ -57,7 +59,7 @@ let displayImageSignature = '';
 let observedDisplayDpr = 1;
 
 const CARD_POSTER_SIZES = '(max-width: 680px) 46vw, (max-width: 900px) 30vw, (max-width: 1180px) 23vw, (max-width: 1599px) 18vw, (max-width: 2099px) 15vw, (max-width: 2499px) 13vw, 11vw';
-const DETAIL_POSTER_SIZES = '(max-width: 680px) 1px, (max-width: 900px) 150px, 180px';
+const DETAIL_POSTER_SIZES = '(max-width: 380px) 100px, (max-width: 680px) 112px, (max-width: 900px) 170px, 210px';
 
 const posterFallback = `data:image/svg+xml,${encodeURIComponent(`
 <svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750">
@@ -163,6 +165,12 @@ function handlePosterError(image) {
     image.src = posterFallback;
 }
 window.handlePosterError = handlePosterError;
+
+function handlePosterLoad(image) {
+    image.classList.add('is-loaded');
+    image.closest('.modal-poster')?.classList.add('is-loaded');
+}
+window.handlePosterLoad = handlePosterLoad;
 
 function displayLayoutBucket(width) {
     if (width >= 2500) return 'ultra';
@@ -646,7 +654,8 @@ async function showDetail(id) {
 function renderDetail(title) {
     const rating = Number(title.imdb_rating) || 0;
     const tier = ratingTier(rating);
-    const poster = sanitizeUrl(title.poster_url) || posterFallback;
+    const safePoster = sanitizeUrl(title.poster_url);
+    const poster = safePoster || posterFallback;
     const detailBackdrop = tmdbPosterUrl(poster, 'w780');
     const original = title.original_title && title.original_title !== title.title ? title.original_title : '';
     const providers = (title.providers || []).map(provider => `
@@ -664,8 +673,12 @@ function renderDetail(title) {
             </div>
         </div>
         <div class="modal-body">
-            <div class="modal-poster"><img ${responsivePosterAttributes(poster, DETAIL_POSTER_SIZES)} alt="${escapeHtml(title.title)} 海报" decoding="async" onerror="window.handlePosterError(this)"></div>
-            <div class="modal-info">
+            <div class="modal-poster-shell">
+                <div class="modal-poster${safePoster ? '' : ' is-fallback'}">
+                    <img class="modal-poster-image" ${responsivePosterAttributes(poster, DETAIL_POSTER_SIZES)} width="500" height="750" alt="${escapeHtml(title.title)} 海报" decoding="async" fetchpriority="high" onload="window.handlePosterLoad(this)" onerror="window.handlePosterError(this)">
+                </div>
+            </div>
+            <div class="modal-summary">
                 <div class="meta-tags">
                     <span class="meta-tag">${title.type === 'movie' ? '电影' : '剧集'}</span>
                     ${region ? `<span class="meta-tag">${escapeHtml(region)}</span>` : ''}
@@ -677,6 +690,8 @@ function renderDetail(title) {
                     ${[['', '未加入'], ['watchlist', '想看'], ['watching', '在看'], ['watched', '已看']].map(([value, label]) => `<button type="button" data-set-status="${value}" class="${status === value ? 'active' : ''}">${label}</button>`).join('')}
                 </div>
                 ${providers ? `<div class="modal-section-title">可观看平台</div><div class="modal-providers">${providers}</div>` : ''}
+            </div>
+            <div class="modal-details">
                 <div class="modal-section-title">剧情简介</div>
                 <p class="modal-overview">${escapeHtml(title.overview || '暂无剧情简介')}</p>
                 <div class="modal-links">${imdbLink}<a class="modal-link" href="https://www.themoviedb.org/${tmdbType}/${encodeURIComponent(title.tmdb_id)}" target="_blank" rel="noopener noreferrer">在 TMDB 查看 ${externalIcon()}</a></div>

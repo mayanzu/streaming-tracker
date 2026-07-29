@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from app.config import (
+    DISCOVER_ALL_PROVIDERS,
     PROVIDERS,
     SYNC_BOOTSTRAP_DAYS_BACK,
     SYNC_BOOTSTRAP_MAX_PAGES,
@@ -197,7 +198,9 @@ async def sync_new_titles(
                         "phase": progress.get("phase"),
                         "current_provider": progress.get("provider"),
                         "current_provider_index": progress.get("provider_index", 0),
-                        "provider_total": progress.get("provider_total", len(PROVIDERS)),
+                        "provider_total": progress.get(
+                            "provider_total", len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS)
+                        ),
                     },
                 )
                 async with _state_lock:
@@ -250,8 +253,8 @@ async def sync_new_titles(
                 {
                     "phase": "persisted",
                     "provider": None,
-                    "provider_index": len(PROVIDERS),
-                    "provider_total": len(PROVIDERS),
+                    "provider_index": len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS),
+                    "provider_total": len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS),
                     "processed": processed,
                     "skipped": skipped,
                     "inserted": fetch_stats["inserted"],

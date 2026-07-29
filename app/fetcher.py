@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import re
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
@@ -9,8 +10,10 @@ import httpx
 from deep_translator import GoogleTranslator
 
 from app.config import (
+    ALL_PROVIDER_WATCH_REGIONS,
     DEFAULT_PROVIDER_REGIONS,
     DETAIL_REFRESH_DAYS,
+    DISCOVER_ALL_PROVIDERS,
     DISCOVER_CONCURRENCY,
     ENRICH_BATCH_SIZE,
     ENRICH_CONCURRENCY,
@@ -30,6 +33,20 @@ from app.config import (
 logger = logging.getLogger(__name__)
 TRUSTED_RATING_SOURCES = {"imdb", "omdb"}
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+IMDB_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9])(tt\d{7,12})(?!\d)", re.IGNORECASE)
+WATCH_PROVIDER_FIELDS = ("flatrate", "ads", "free", "rent", "buy")
+PRIMARY_PROVIDER_ALIASES = {
+    "netflix": "netflix",
+    "disney plus": "disney",
+    "disney+": "disney",
+    "max": "max",
+    "hbo max": "max",
+    "amazon prime video": "amazon",
+    "prime video": "amazon",
+    "apple tv plus": "apple",
+    "apple tv+": "apple",
+    "hulu": "hulu",
+}
 
 
 class ExternalRequestError(RuntimeError):
@@ -37,6 +54,14 @@ class ExternalRequestError(RuntimeError):
         super().__init__(message)
         self.service = service
         self.status_code = status_code
+
+
+def normalize_imdb_id(value):
+    """Accept a bare IMDb ID or an IMDb title URL and return a canonical ID."""
+    match = IMDB_ID_PATTERN.search(str(value or "").strip())
+    if not match:
+        raise ValueError("invalid IMDb title ID or URL")
+    return match.group(1).lower()
 
 
 @lru_cache(maxsize=5000)
@@ -268,6 +293,14 @@ def _merge_candidate(target, incoming):
 
 
 def _candidate_from_item(item, media_type, provider_name, region, channel):
+    candidate = _base_candidate_from_item(item, media_type, channel)
+    if provider_name:
+        candidate["providers"] = [provider_name]
+        candidate["provider_regions"] = {provider_name: [region]}
+    return candidate
+
+
+def _base_candidate_from_item(item, media_type, channel):
     return {
         "tmdb_id": item["id"],
         "title": item.get("title") or item.get("name") or "",
@@ -280,11 +313,75 @@ def _candidate_from_item(item, media_type, provider_name, region, channel):
         "rating_source": None,
         "rating_votes": None,
         "added_date": date.today().isoformat(),
-        "providers": [provider_name],
-        "provider_regions": {provider_name: [region]},
+        "providers": [],
+        "provider_regions": {},
         "discovery_channels": [channel],
         "origin_countries": _normalize_country_codes(item.get("origin_country")),
     }
+
+
+def _provider_availability(payload):
+    """Collapse TMDB watch offers into six primary providers plus ``others``."""
+    provider_by_id = {provider_id: name for name, provider_id in PROVIDERS.items()}
+    providers = []
+    provider_regions = {}
+    for region, offers in (payload.get("results") or {}).items():
+        for field in WATCH_PROVIDER_FIELDS:
+            for offer in offers.get(field) or []:
+                provider_id = offer.get("provider_id")
+                provider_name = provider_by_id.get(provider_id)
+                if not provider_name:
+                    display_name = str(offer.get("provider_name") or "").strip().casefold()
+                    provider_name = PRIMARY_PROVIDER_ALIASES.get(display_name, "others")
+                if provider_name not in providers:
+                    providers.append(provider_name)
+                regions = provider_regions.setdefault(provider_name, [])
+                if region not in regions:
+                    regions.append(region)
+    return providers, provider_regions
+
+
+async def discover_imdb_title(imdb_reference, client=None):
+    """Resolve one IMDb title through TMDB without relying on provider discovery."""
+    imdb_id = normalize_imdb_id(imdb_reference)
+    if not TMDB_API_KEY:
+        raise ValueError("TMDB_API_KEY is required")
+
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0))
+    try:
+        found = await fetch_tmdb(
+            f"/find/{imdb_id}",
+            {"external_source": "imdb_id"},
+            client=client,
+        )
+        matches = [
+            ("tv", item) for item in (found.get("tv_results") or [])
+        ] + [
+            ("movie", item) for item in (found.get("movie_results") or [])
+        ]
+        if not matches:
+            return None
+
+        media_type, item = max(
+            matches,
+            key=lambda match: float(match[1].get("popularity") or 0),
+        )
+        candidate = _base_candidate_from_item(item, media_type, "imdb_import")
+        candidate["imdb_id"] = imdb_id
+        watch = await fetch_tmdb(
+            f"/{media_type}/{candidate['tmdb_id']}/watch/providers",
+            {"language": "en-US"},
+            client=client,
+        )
+        providers, provider_regions = _provider_availability(watch)
+        candidate["providers"] = providers
+        candidate["provider_regions"] = provider_regions
+        return candidate
+    finally:
+        if owns_client:
+            await client.aclose()
 
 
 async def _discover_range(
@@ -295,7 +392,7 @@ async def _discover_range(
         params = {
             "watch_region": region,
             "with_watch_providers": provider_id,
-            "watch_monetization_types": WATCH_MONETIZATION_TYPES,
+            "with_watch_monetization_types": WATCH_MONETIZATION_TYPES,
             "sort_by": sort_field,
             f"{date_field}.gte": range_start.isoformat(),
             f"{date_field}.lte": range_end.isoformat(),
@@ -407,6 +504,112 @@ async def discover_provider(
             await client.aclose()
 
 
+async def discover_unconfigured_providers(
+    days_back=30, max_pages=5, window_days=0, client=None, catalog_range=None,
+):
+    """Discover titles carried by any TMDB watch provider not in the static catalog."""
+    if not TMDB_API_KEY:
+        raise ValueError("TMDB_API_KEY is required")
+
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0))
+    semaphore = asyncio.Semaphore(DISCOVER_CONCURRENCY)
+    recent_ranges = _date_ranges(days_back, window_days)
+    media_specs = (
+        ("movie", "release_date", "release_date.desc", "movie_release"),
+        ("tv", "first_air_date", "first_air_date.desc", "tv_premiere"),
+        ("tv", "air_date", "popularity.desc", "tv_current_airing"),
+    )
+
+    async def provider_ids_for(region, media_type):
+        statically_covered_ids = {
+            provider_id for provider_name, provider_id in PROVIDERS.items()
+            if region in (
+                PROVIDER_REGIONS.get(provider_name)
+                or DEFAULT_PROVIDER_REGIONS[provider_name]
+            )
+        }
+        async with semaphore:
+            payload = await fetch_tmdb(
+                f"/watch/providers/{media_type}",
+                {"watch_region": region, "language": "en-US"},
+                client=client,
+            )
+        return [
+            int(item["provider_id"])
+            for item in (payload.get("results") or [])
+            if item.get("provider_id") is not None
+            and int(item["provider_id"]) not in statically_covered_ids
+        ]
+
+    try:
+        directory_tasks = {
+            (region, media_type): asyncio.create_task(provider_ids_for(region, media_type))
+            for region in ALL_PROVIDER_WATCH_REGIONS
+            for media_type in ("movie", "tv")
+        }
+        directories = {}
+        errors = []
+        for key, task in directory_tasks.items():
+            try:
+                directories[key] = await task
+            except Exception as exc:
+                region, media_type = key
+                errors.append(
+                    f"provider_directory region={region} type={media_type}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                directories[key] = []
+
+        tasks = []
+        labels = []
+        for region in ALL_PROVIDER_WATCH_REGIONS:
+            for media_type, date_field, sort_field, channel in media_specs:
+                provider_ids = directories.get((region, media_type)) or []
+                if not provider_ids:
+                    continue
+                provider_filter = "|".join(str(value) for value in sorted(set(provider_ids)))
+                for range_start, range_end in recent_ranges:
+                    tasks.append(_discover_range(
+                        client, semaphore, None, provider_filter, region, media_type,
+                        date_field, sort_field, range_start, range_end, max_pages,
+                        f"all_providers_{channel}",
+                    ))
+                    labels.append((region, media_type, channel, range_start, range_end))
+                if catalog_range and channel in {"movie_release", "tv_premiere"}:
+                    range_start, range_end = catalog_range
+                    tasks.append(_discover_range(
+                        client, semaphore, None, provider_filter, region, media_type,
+                        date_field, sort_field, range_start, range_end, max_pages,
+                        "all_providers_catalog_compensation",
+                    ))
+                    labels.append((region, media_type, "catalog_compensation", range_start, range_end))
+
+        merged = {}
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for label, result in zip(labels, results):
+            if isinstance(result, Exception):
+                region, media_type, channel, range_start, range_end = label
+                errors.append(
+                    f"all_providers region={region} type={media_type} channel={channel} "
+                    f"dates={range_start}:{range_end}: {type(result).__name__}: {result}"
+                )
+                continue
+            candidates, query_errors = result
+            errors.extend(query_errors)
+            for candidate in candidates:
+                key = (candidate["type"], candidate["tmdb_id"])
+                if key in merged:
+                    _merge_candidate(merged[key], candidate)
+                else:
+                    merged[key] = candidate
+        return {"provider": "all_providers", "titles": list(merged.values()), "errors": errors}
+    finally:
+        if owns_client:
+            await client.aclose()
+
+
 def empty_fetch_stats():
     return {
         "discovered": 0,
@@ -444,7 +647,7 @@ async def discover_all_providers(
     merged = {}
     stats = empty_fetch_stats()
     async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0)) as client:
-        provider_total = len(PROVIDERS)
+        provider_total = len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS)
         for provider_index, provider_name in enumerate(PROVIDERS, start=1):
             result = await discover_provider(
                 provider_name,
@@ -468,6 +671,32 @@ async def discover_all_providers(
                 phase="discovered",
                 provider=provider_name,
                 provider_index=provider_index,
+                provider_total=provider_total,
+                provider_discovered=len(result["titles"]),
+                stats=dict(stats),
+            )
+        if DISCOVER_ALL_PROVIDERS:
+            result = await discover_unconfigured_providers(
+                days_back=days_back,
+                max_pages=max_pages,
+                window_days=window_days,
+                client=client,
+                catalog_range=catalog_range,
+            )
+            stats["discovered"] += len(result["titles"])
+            stats["errors"].extend(result["errors"])
+            for candidate in result["titles"]:
+                key = (candidate["type"], candidate["tmdb_id"])
+                if key in merged:
+                    _merge_candidate(merged[key], candidate)
+                else:
+                    merged[key] = candidate
+            stats["unique_discovered"] = len(merged)
+            await _notify_progress(
+                progress_callback,
+                phase="discovered",
+                provider="all_providers",
+                provider_index=provider_total,
                 provider_total=provider_total,
                 provider_discovered=len(result["titles"]),
                 stats=dict(stats),
@@ -514,7 +743,10 @@ async def _fetch_details(candidate, client):
     try:
         details = await fetch_tmdb(
             endpoint,
-            {"append_to_response": "external_ids,images", "include_image_language": "zh,null,en"},
+            {
+                "append_to_response": "external_ids,images,watch/providers",
+                "include_image_language": "zh,null,en",
+            },
             client=client,
         )
         title["title"] = details.get("title") or details.get("name") or title.get("title") or ""
@@ -528,7 +760,22 @@ async def _fetch_details(candidate, client):
             or title.get("release_date") or ""
         )
         title["poster_url"] = _poster_url(_localized_poster_path(details)) or title.get("poster_url")
-        title["imdb_id"] = (details.get("external_ids") or {}).get("imdb_id")
+        title["imdb_id"] = (
+            (details.get("external_ids") or {}).get("imdb_id")
+            or title.get("imdb_id")
+        )
+        providers, provider_regions = _provider_availability(
+            details.get("watch/providers") or {}
+        )
+        if providers:
+            title["providers"] = list(dict.fromkeys(
+                (title.get("providers") or []) + providers
+            ))
+            regions = title.setdefault("provider_regions", {})
+            for provider, values in provider_regions.items():
+                regions[provider] = list(dict.fromkeys(
+                    (regions.get(provider) or []) + values
+                ))
         title["origin_countries"] = _origin_countries_from_details(details)
         if not title["overview"]:
             english = await fetch_tmdb(endpoint, {"language": "en-US"}, client=client)

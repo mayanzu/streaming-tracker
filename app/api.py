@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.database import (
     check_database,
@@ -13,8 +13,9 @@ from app.database import (
     get_titles,
     update_title_status,
 )
-from app.config import MAIN_FILTER_PROVIDERS, SYNC_ENABLED, TMDB_API_KEY
+from app.config import MAIN_FILTER_PROVIDERS, PROVIDERS, SYNC_ENABLED, TMDB_API_KEY
 from app.scheduler import get_scheduler_status
+from app.importer import TitleImportError, import_title_by_imdb
 from app.sync import get_sync_state, sync_new_titles
 
 router = APIRouter()
@@ -22,6 +23,10 @@ router = APIRouter()
 
 class WatchStatusUpdate(BaseModel):
     watch_status: Literal["", "watchlist", "watching", "watched"]
+
+
+class TitleImportRequest(BaseModel):
+    imdb: str = Field(min_length=1, max_length=200)
 
 
 @router.get("/health")
@@ -118,6 +123,29 @@ def list_titles(
     )
 
 
+@router.post("/api/titles/import")
+async def import_title(payload: TitleImportRequest):
+    if not TMDB_API_KEY:
+        raise HTTPException(status_code=400, detail={
+            "code": "missing_tmdb_api_key",
+            "message": "未配置 TMDB_API_KEY，无法导入作品",
+        })
+    try:
+        return await import_title_by_imdb(payload.imdb)
+    except TitleImportError as exc:
+        status_by_code = {
+            "invalid_imdb_id": 422,
+            "tmdb_not_found": 404,
+            "missing_tmdb_api_key": 400,
+            "external_request_failed": 502,
+            "persistence_failed": 500,
+        }
+        raise HTTPException(
+            status_code=status_by_code.get(exc.code, 500),
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
 @router.get("/api/titles/{title_id}")
 def get_title(title_id: int):
     title = get_title_detail(title_id)
@@ -136,9 +164,14 @@ def set_title_status(title_id: int, payload: WatchStatusUpdate):
 
 @router.get("/api/providers")
 def list_providers():
+    providers = get_providers()
+    discovered = [
+        item["provider_name"] for item in providers
+        if item["provider_name"] not in PROVIDERS
+    ]
     return {
-        "providers": get_providers(),
-        "available": list(MAIN_FILTER_PROVIDERS),
+        "providers": providers,
+        "available": list(dict.fromkeys((*MAIN_FILTER_PROVIDERS, *discovered))),
         "total": get_stats()["total"],
     }
 

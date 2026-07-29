@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
@@ -65,7 +66,7 @@ class SyncRegressionTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(result["inserted"], 1)
-            with sqlite3.connect(db_path) as connection:
+            with closing(sqlite3.connect(db_path)) as connection:
                 row = connection.execute(
                     "SELECT tmdb_id, title FROM titles WHERE tmdb_id=295509 AND type='tv'"
                 ).fetchone()

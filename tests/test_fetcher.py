@@ -110,6 +110,143 @@ class FetcherTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(result["titles"]), 1)
 
+    def test_normalize_imdb_id_accepts_id_and_url(self):
+        self.assertEqual(fetcher.normalize_imdb_id("TT39245629"), "tt39245629")
+        self.assertEqual(
+            fetcher.normalize_imdb_id("https://www.imdb.com/title/tt39245629/"),
+            "tt39245629",
+        )
+        with self.assertRaises(ValueError):
+            fetcher.normalize_imdb_id("https://www.imdb.com/name/nm0000001/")
+
+    def test_provider_availability_collapses_to_primary_and_others(self):
+        providers, regions = fetcher._provider_availability({
+            "results": {
+                "US": {"flatrate": [
+                    {"provider_id": 119, "provider_name": "Amazon Prime Video"},
+                    {"provider_id": 9999, "provider_name": "Local Stream"},
+                ]},
+                "KR": {"flatrate": [
+                    {"provider_id": 1883, "provider_name": "TVING"},
+                ]},
+            },
+        })
+        self.assertEqual(set(providers), {"amazon", "others"})
+        self.assertEqual(regions["amazon"], ["US"])
+        self.assertEqual(set(regions["others"]), {"US", "KR"})
+
+    async def test_direct_imdb_discovery_resolves_regional_providers(self):
+        calls = []
+
+        async def fake_fetch(endpoint, params=None, **_kwargs):
+            calls.append((endpoint, params))
+            if endpoint == "/find/tt39245629":
+                return {
+                    "movie_results": [],
+                    "tv_results": [{
+                        "id": 292121,
+                        "name": "稻草人",
+                        "original_name": "허수아비",
+                        "first_air_date": "2026-04-20",
+                        "popularity": 50,
+                    }],
+                }
+            if endpoint == "/tv/292121/watch/providers":
+                return {
+                    "results": {
+                        "KR": {"flatrate": [{"provider_id": 1883}]},
+                        "SG": {"ads": [{"provider_id": 158}]},
+                        "US": {"flatrate": [{"provider_id": 344}]},
+                    },
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with (
+            patch.object(fetcher, "TMDB_API_KEY", "test-key"),
+            patch.object(fetcher, "fetch_tmdb", side_effect=fake_fetch),
+        ):
+            candidate = await fetcher.discover_imdb_title(
+                "https://www.imdb.com/title/tt39245629/",
+                client=object(),
+            )
+
+        self.assertEqual(candidate["tmdb_id"], 292121)
+        self.assertEqual(candidate["imdb_id"], "tt39245629")
+        self.assertEqual(candidate["providers"], ["others"])
+        self.assertEqual(
+            set(candidate["provider_regions"]["others"]),
+            {"KR", "SG", "US"},
+        )
+        self.assertEqual(calls[0][1]["external_source"], "imdb_id")
+
+    async def test_detail_lookup_preserves_seeded_imdb_id(self):
+        async def fake_fetch(_endpoint, params=None, **_kwargs):
+            return {
+                "id": 292121,
+                "name": "稻草人",
+                "original_name": "허수아비",
+                "first_air_date": "2026-04-20",
+                "external_ids": {},
+                "images": {},
+                "watch/providers": {
+                    "results": {
+                        "KR": {"flatrate": [{
+                            "provider_id": 9999,
+                            "provider_name": "Local Stream",
+                        }]},
+                    },
+                },
+                "origin_country": ["KR"],
+                "overview": "已有简介",
+            }
+
+        candidate = {
+            "tmdb_id": 292121,
+            "imdb_id": "tt39245629",
+            "type": "tv",
+            "title": "稻草人",
+            "providers": ["tving"],
+        }
+        with patch.object(fetcher, "fetch_tmdb", side_effect=fake_fetch):
+            title = await fetcher._fetch_details(candidate, object())
+        self.assertEqual(title["imdb_id"], "tt39245629")
+        self.assertIn("others", title["providers"])
+        self.assertEqual(title["provider_regions"]["others"], ["KR"])
+
+    async def test_dynamic_discovery_queries_all_unconfigured_provider_ids(self):
+        range_calls = []
+
+        async def fake_fetch(endpoint, params=None, **_kwargs):
+            self.assertTrue(endpoint.startswith("/watch/providers/"))
+            self.assertEqual(params["watch_region"], "KR")
+            return {"results": [
+                {"provider_id": 8, "provider_name": "Netflix"},
+                {"provider_id": 9999, "provider_name": "Local Stream"},
+            ]}
+
+        async def fake_range(*args):
+            range_calls.append(args)
+            media_type = args[5]
+            return [fetcher._base_candidate_from_item(
+                {"id": 42, "name": "Dynamic"}, media_type, "all_providers",
+            )], []
+
+        with (
+            patch.object(fetcher, "TMDB_API_KEY", "test-key"),
+            patch.object(fetcher, "PROVIDERS", {"netflix": 8}),
+            patch.object(fetcher, "ALL_PROVIDER_WATCH_REGIONS", ("KR",)),
+            patch.object(fetcher, "fetch_tmdb", side_effect=fake_fetch),
+            patch.object(fetcher, "_discover_range", side_effect=fake_range),
+        ):
+            result = await fetcher.discover_unconfigured_providers(
+                days_back=1, max_pages=1, client=object(),
+            )
+
+        self.assertEqual(len(range_calls), 3)
+        self.assertTrue(all(call[2] is None for call in range_calls))
+        self.assertTrue(all(call[3] == "9999" for call in range_calls))
+        self.assertEqual(len(result["titles"]), 2)
+
     async def test_adaptive_split_avoids_multi_day_truncation(self):
         async def fake_fetch(_endpoint, params=None, **_kwargs):
             start = date.fromisoformat(params["release_date.gte"])
@@ -131,6 +268,23 @@ class FetcherTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(len(titles), 3)
         self.assertEqual(errors, [])
+
+    async def test_discover_uses_supported_monetization_parameter(self):
+        observed = []
+
+        async def fake_fetch(_endpoint, params=None, **_kwargs):
+            observed.append(params)
+            return {"total_pages": 1, "results": []}
+
+        target = date(2026, 7, 1)
+        with patch.object(fetcher, "fetch_tmdb", side_effect=fake_fetch):
+            await fetcher._discover_range(
+                object(), __import__("asyncio").Semaphore(1), "tving", 1883, "KR",
+                "tv", "first_air_date", "first_air_date.desc", target, target, 1,
+                "tv_premiere",
+            )
+        self.assertIn("with_watch_monetization_types", observed[0])
+        self.assertNotIn("watch_monetization_types", observed[0])
 
     async def test_tv_air_date_and_catalog_channels_are_queried(self):
         calls = []
@@ -167,6 +321,7 @@ class FetcherTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(fetcher, "PROVIDERS", {"max": 1, "disney": 2}),
+            patch.object(fetcher, "DISCOVER_ALL_PROVIDERS", False),
             patch.object(fetcher, "discover_provider", side_effect=fake_provider),
         ):
             result = await fetcher.discover_all_providers()

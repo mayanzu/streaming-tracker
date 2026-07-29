@@ -7,7 +7,13 @@ from datetime import date, datetime, timedelta, timezone
 
 import logging
 
-from app.config import DATABASE_URL, MIN_IMDB_RATING, PENDING_RETRY_DAYS, PROVIDER_STALE_DAYS
+from app.config import (
+    DATABASE_URL,
+    MIN_IMDB_RATING,
+    PENDING_RETRY_DAYS,
+    PROVIDERS,
+    PROVIDER_STALE_DAYS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +145,6 @@ def init_db():
         FROM title_providers tp
         JOIN titles t ON t.id = tp.title_id
     """, (now, now))
-
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS pending_titles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,6 +172,15 @@ def init_db():
             updated_at TEXT NOT NULL
         )
     """)
+    cursor.execute(
+        "SELECT value FROM sync_state WHERE key='provider_categories_v1'"
+    )
+    if not cursor.fetchone():
+        _collapse_provider_categories(cursor)
+        cursor.execute("""
+            INSERT INTO sync_state(key, value, updated_at)
+            VALUES ('provider_categories_v1', 'complete', ?)
+        """, (now,))
 
     # 用户片单与抓取数据分离：即使作品表在评分重建时被清空，个人状态也不会丢失。
     cursor.execute("""
@@ -545,6 +559,71 @@ def get_title_cache(identities):
         return cache
     finally:
         conn.close()
+
+
+def _merge_provider_group(cursor, target, where_sql, params):
+    """Merge matching provider rows into one key without losing region history."""
+    cursor.execute("DROP TABLE IF EXISTS temp.provider_availability_merge")
+    cursor.execute(f"""
+        CREATE TEMP TABLE provider_availability_merge AS
+        SELECT title_id, region, monetization_type,
+               MIN(first_seen_at) AS first_seen_at,
+               MAX(last_seen_at) AS last_seen_at,
+               MAX(is_active) AS is_active
+        FROM title_provider_availability
+        WHERE {where_sql}
+        GROUP BY title_id, region, monetization_type
+    """, params)
+    cursor.execute(f"DELETE FROM title_provider_availability WHERE {where_sql}", params)
+    cursor.execute("""
+        INSERT INTO title_provider_availability
+            (title_id, provider_name, region, monetization_type,
+             first_seen_at, last_seen_at, is_active)
+        SELECT title_id, ?, region, monetization_type,
+               first_seen_at, last_seen_at, is_active
+        FROM provider_availability_merge
+    """, (target,))
+    cursor.execute("DROP TABLE provider_availability_merge")
+
+    cursor.execute("DROP TABLE IF EXISTS temp.provider_title_merge")
+    cursor.execute(f"""
+        CREATE TEMP TABLE provider_title_merge AS
+        SELECT DISTINCT title_id FROM title_providers WHERE {where_sql}
+    """, params)
+    cursor.execute(f"DELETE FROM title_providers WHERE {where_sql}", params)
+    cursor.execute("""
+        INSERT OR IGNORE INTO title_providers(title_id, provider_name)
+        SELECT title_id, ? FROM provider_title_merge
+    """, (target,))
+    cursor.execute("DROP TABLE provider_title_merge")
+
+
+def _collapse_provider_categories(cursor):
+    alias_groups = {
+        "netflix": ("netflix",),
+        "disney": ("disney", "disney plus", "disney+"),
+        "max": ("max", "hbo max"),
+        "amazon": ("amazon", "amazon prime video", "prime video"),
+        "apple": ("apple", "apple tv plus", "apple tv+"),
+        "hulu": ("hulu",),
+    }
+    for target, aliases in alias_groups.items():
+        placeholders = ",".join("?" for _ in aliases)
+        _merge_provider_group(
+            cursor,
+            target,
+            f"LOWER(provider_name) IN ({placeholders})",
+            aliases,
+        )
+
+    primary_names = tuple(PROVIDERS)
+    placeholders = ",".join("?" for _ in primary_names)
+    _merge_provider_group(
+        cursor,
+        "others",
+        f"provider_name IS NULL OR LOWER(provider_name) NOT IN ({placeholders})",
+        primary_names,
+    )
 
 
 def get_due_pending_titles(limit=500):
