@@ -172,6 +172,62 @@ function handlePosterLoad(image) {
 }
 window.handlePosterLoad = handlePosterLoad;
 
+function handleGridPosterLoad(image) {
+    image.classList.add('is-loaded');
+}
+window.handleGridPosterLoad = handleGridPosterLoad;
+
+const reduceMotionQuery = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)')
+    : { matches: false };
+
+/* 卡片错峰入场：IntersectionObserver 按批内序号递增延迟 */
+const cardEnterObserver = 'IntersectionObserver' in window
+    ? new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+            if (!entry.isIntersecting) return;
+            const card = entry.target;
+            cardEnterObserver.unobserve(card);
+            const index = Number(card.dataset.enterIndex || 0);
+            card.style.transitionDelay = `${Math.min(index * 36, 324)}ms`;
+            card.classList.add('is-visible');
+            card.addEventListener('transitionend', () => { card.style.transitionDelay = ''; }, { once: true });
+        });
+    }, { rootMargin: '0px 0px -2% 0px', threshold: 0.01 })
+    : null;
+
+function prepareCardEntrance(card, index) {
+    if (!cardEnterObserver || reduceMotionQuery.matches) return;
+    card.classList.add('card-enter');
+    card.dataset.enterIndex = String(index % 10);
+    cardEnterObserver.observe(card);
+}
+
+function resetCardEntrance() {
+    cardEnterObserver?.disconnect();
+}
+
+function animateNumber(element, target, decimals = 0) {
+    const finalText = decimals
+        ? Number(target).toFixed(decimals)
+        : Math.round(Number(target)).toLocaleString();
+    if (reduceMotionQuery.matches) {
+        element.textContent = finalText;
+        return;
+    }
+    const duration = 720;
+    const start = performance.now();
+    const tick = now => {
+        const progress = Math.min((now - start) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const value = Number(target) * eased;
+        element.textContent = decimals ? value.toFixed(decimals) : Math.round(value).toLocaleString();
+        if (progress < 1) requestAnimationFrame(tick);
+        else element.textContent = finalText;
+    };
+    requestAnimationFrame(tick);
+}
+
 function displayLayoutBucket(width) {
     if (width >= 2500) return 'ultra';
     if (width >= 2100) return 'wide';
@@ -326,9 +382,12 @@ async function loadStats() {
         const byStatus = statsData.by_status || {};
         const listTotal = Object.values(byStatus).reduce((sum, count) => sum + Number(count || 0), 0);
         document.getElementById('overview-stats').innerHTML = `
-            <div><dt>收录</dt><dd>${Number(statsData.total || 0).toLocaleString()}</dd></div>
-            <div><dt>平均分</dt><dd>${Number(statsData.avg_rating || 0).toFixed(1)}</dd></div>
-            <div><dt>我的片单</dt><dd>${listTotal.toLocaleString()}</dd></div>`;
+            <div><dt>收录</dt><dd data-stat="total">—</dd></div>
+            <div><dt>平均分</dt><dd data-stat="avg">—</dd></div>
+            <div><dt>我的片单</dt><dd data-stat="list">—</dd></div>`;
+        animateNumber(document.querySelector('[data-stat="total"]'), Number(statsData.total || 0));
+        animateNumber(document.querySelector('[data-stat="avg"]'), Number(statsData.avg_rating || 0), 1);
+        animateNumber(document.querySelector('[data-stat="list"]'), listTotal);
         document.getElementById('status-count-all').textContent = Number(statsData.total || 0).toLocaleString();
         ['watchlist', 'watching', 'watched'].forEach(status => {
             document.getElementById(`status-count-${status}`).textContent = Number(byStatus[status] || 0).toLocaleString();
@@ -538,6 +597,7 @@ async function loadTitles() {
 
 function renderSkeletons() {
     const grid = document.getElementById('titles-grid');
+    resetCardEntrance();
     grid.setAttribute('aria-busy', 'true');
     grid.innerHTML = Array.from({ length: SKELETON_COUNT }, () => `
         <div class="skeleton-card" aria-hidden="true">
@@ -548,13 +608,20 @@ function renderSkeletons() {
 
 function renderTitles(titles, clear) {
     const grid = document.getElementById('titles-grid');
-    if (clear) grid.innerHTML = '';
+    if (clear) {
+        resetCardEntrance();
+        grid.innerHTML = '';
+    }
     if (clear && !titles.length) {
         renderEmptyState();
         return;
     }
     const fragment = document.createDocumentFragment();
-    titles.forEach(title => fragment.appendChild(createTitleCard(title)));
+    titles.forEach((title, index) => {
+        const card = createTitleCard(title);
+        prepareCardEntrance(card, index);
+        fragment.appendChild(card);
+    });
     grid.appendChild(fragment);
 }
 
@@ -564,6 +631,7 @@ function createTitleCard(title) {
     card.dataset.titleId = title.id;
     card.dataset.watchStatus = title.watch_status || '';
     const rating = Number(title.imdb_rating) || 0;
+    const tier = ratingTier(rating);
     const poster = sanitizeUrl(title.poster_url) || posterFallback;
     const providers = (title.providers || []).map(provider => `
         <span class="card-provider"><span class="p-dot" style="background:${providerColors[provider] || '#7f7d75'}"></span>${escapeHtml(providerNames[provider] || provider)}</span>`).join('');
@@ -572,9 +640,9 @@ function createTitleCard(title) {
     card.innerHTML = `
         <button class="card-main" type="button" aria-label="查看 ${escapeHtml(title.title)} 详情">
             <div class="poster-wrap">
-                <img ${responsivePosterAttributes(poster, CARD_POSTER_SIZES)} alt="${escapeHtml(title.title)} 海报" loading="lazy" decoding="async" onerror="window.handlePosterError(this)">
+                <img ${responsivePosterAttributes(poster, CARD_POSTER_SIZES)} alt="${escapeHtml(title.title)} 海报" loading="lazy" decoding="async" onload="window.handleGridPosterLoad(this)" onerror="window.handlePosterError(this)">
                 ${status ? `<span class="status-badge" data-status="${status}">${watchStatusNames[status]}</span>` : ''}
-                <span class="poster-rating">${rating ? rating.toFixed(1) : '—'}<small>IMDb</small></span>
+                <span class="poster-rating"${tier ? ` data-tier="${tier}"` : ''}><span class="r-num">${rating ? rating.toFixed(1) : '—'}</span><small>IMDb</small></span>
                 <span class="type-tag">${title.type === 'movie' ? '电影' : '剧集'}</span>
             </div>
             <div class="card-info">
@@ -590,6 +658,8 @@ function createTitleCard(title) {
             </button>
             ${statusMenuHtml(title.id, status)}
         </div>`;
+    const image = card.querySelector('.poster-wrap img');
+    if (image?.complete && image.naturalWidth > 0) image.classList.add('is-loaded');
     return card;
 }
 
@@ -668,7 +738,16 @@ function renderDetail(title) {
         <div class="modal-hero">
             <div class="modal-hero-bg" style="background-image:url('${escapeHtml(detailBackdrop)}')"></div>
             <div class="modal-hero-content">
-                <div class="modal-hero-rating"><div class="rating-num">${rating ? rating.toFixed(1) : '—'}</div>${tier ? `<div class="rating-tier" data-tier="${tier}">IMDb · ${ratingTierLabels[tier]}</div>` : ''}</div>
+                <div class="modal-hero-rating">
+                    <div class="rating-ring"${tier ? ` data-tier="${tier}"` : ''}>
+                        <svg viewBox="0 0 88 88" aria-hidden="true">
+                            <circle class="ring-bg" cx="44" cy="44" r="34"/>
+                            <circle class="ring-val" cx="44" cy="44" r="34"/>
+                        </svg>
+                        <div class="rating-num">${rating ? rating.toFixed(1) : '—'}</div>
+                    </div>
+                    <div class="rating-tier"${tier ? ` data-tier="${tier}"` : ''}>${tier ? `IMDb · ${ratingTierLabels[tier]}` : '暂无评分'}</div>
+                </div>
                 <div class="modal-hero-title"><h2 id="modal-title">${escapeHtml(title.title)}</h2>${original ? `<p>${escapeHtml(original)}</p>` : ''}</div>
             </div>
         </div>
@@ -697,6 +776,14 @@ function renderDetail(title) {
                 <div class="modal-links">${imdbLink}<a class="modal-link" href="https://www.themoviedb.org/${tmdbType}/${encodeURIComponent(title.tmdb_id)}" target="_blank" rel="noopener noreferrer">在 TMDB 查看 ${externalIcon()}</a></div>
             </div>
         </div>`;
+    const ringValue = document.querySelector('#detail-content .ring-val');
+    if (ringValue && rating > 0) {
+        const circumference = 2 * Math.PI * 34;
+        const target = circumference * (1 - Math.min(rating, 10) / 10);
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            ringValue.style.strokeDashoffset = target.toFixed(1);
+        }));
+    }
 }
 
 function externalIcon() {
@@ -949,11 +1036,19 @@ function setupInfiniteScroll() {
 
 function setupBackToTop() {
     const button = document.getElementById('back-to-top');
+    const header = document.querySelector('.app-header');
+    const progress = document.querySelector('.scroll-progress');
     let ticking = false;
     window.addEventListener('scroll', () => {
         if (ticking) return;
         requestAnimationFrame(() => {
-            button.classList.toggle('visible', window.scrollY > 700);
+            const scrollY = window.scrollY;
+            button.classList.toggle('visible', scrollY > 700);
+            header?.classList.toggle('is-scrolled', scrollY > 10);
+            if (progress) {
+                const max = document.documentElement.scrollHeight - window.innerHeight;
+                progress.style.transform = `scaleX(${max > 0 ? Math.min(scrollY / max, 1) : 0})`;
+            }
             ticking = false;
         });
         ticking = true;
