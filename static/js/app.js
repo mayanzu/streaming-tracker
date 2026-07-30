@@ -12,6 +12,8 @@ const state = {
     loading: false,
     hasMore: true,
     requestVersion: 0,
+    loadedTitleIds: [],
+    currentDetailIndex: -1,
 };
 
 const providerColors = {
@@ -342,7 +344,7 @@ function hydrateStateFromUrl() {
     state.region = /^[A-Za-z]{2}$/.test(params.get('region') || '') ? params.get('region').toUpperCase() : '';
     state.rating = valid(params.get('rating') || '0', ['0', '7', '7.5', '8'], '0');
     state.rating = Number(state.rating);
-    state.sort_by = valid(params.get('sort') || 'release_date', ['rating', 'release_date'], 'release_date');
+    state.sort_by = valid(params.get('sort') || 'release_date', ['rating', 'release_date', 'added_date'], 'release_date');
     state.watchStatus = valid(params.get('status') || '', ['', 'watchlist', 'watching', 'watched']);
 }
 
@@ -388,6 +390,8 @@ async function loadStats() {
         animateNumber(document.querySelector('[data-stat="total"]'), Number(statsData.total || 0));
         animateNumber(document.querySelector('[data-stat="avg"]'), Number(statsData.avg_rating || 0), 1);
         animateNumber(document.querySelector('[data-stat="list"]'), listTotal);
+        const footerTotal = document.getElementById('footer-total');
+        if (footerTotal) footerTotal.textContent = Number(statsData.total || 0).toLocaleString();
         document.getElementById('status-count-all').textContent = Number(statsData.total || 0).toLocaleString();
         ['watchlist', 'watching', 'watched'].forEach(status => {
             document.getElementById(`status-count-${status}`).textContent = Number(byStatus[status] || 0).toLocaleString();
@@ -566,7 +570,7 @@ async function loadTitles() {
 
         const data = await api(`/api/titles?${params}`);
         if (version !== state.requestVersion) return;
-        renderTitles(data.titles || [], state.page === 1);
+        renderTitles(data.titles || [], state.page === 1, (state.page - 1) * state.limit);
         const loaded = Math.min((state.page - 1) * state.limit + data.titles.length, data.total);
         const noun = state.type === 'movie' ? '部电影' : state.type === 'tv' ? '部剧集' : '部作品';
         document.getElementById('stats-info').innerHTML = `找到 <strong>${Number(data.total).toLocaleString()}</strong> ${noun}${data.total ? ` · 已显示 ${loaded}` : ''}`;
@@ -591,6 +595,7 @@ async function loadTitles() {
             state.loading = false;
             loader.classList.add('hidden');
             grid.setAttribute('aria-busy', 'false');
+            if (!document.getElementById('detail-modal').classList.contains('hidden')) updateDetailNav();
         }
     }
 }
@@ -606,26 +611,29 @@ function renderSkeletons() {
         </div>`).join('');
 }
 
-function renderTitles(titles, clear) {
+function renderTitles(titles, clear, rankBase = 0) {
     const grid = document.getElementById('titles-grid');
     if (clear) {
         resetCardEntrance();
         grid.innerHTML = '';
+        state.loadedTitleIds = [];
     }
     if (clear && !titles.length) {
         renderEmptyState();
         return;
     }
+    const showRank = state.sort_by === 'rating';
     const fragment = document.createDocumentFragment();
     titles.forEach((title, index) => {
-        const card = createTitleCard(title);
+        state.loadedTitleIds.push(Number(title.id));
+        const card = createTitleCard(title, showRank ? rankBase + index + 1 : null);
         prepareCardEntrance(card, index);
         fragment.appendChild(card);
     });
     grid.appendChild(fragment);
 }
 
-function createTitleCard(title) {
+function createTitleCard(title, rank = null) {
     const card = document.createElement('article');
     card.className = 'title-card';
     card.dataset.titleId = title.id;
@@ -642,6 +650,7 @@ function createTitleCard(title) {
             <div class="poster-wrap">
                 <img ${responsivePosterAttributes(poster, CARD_POSTER_SIZES)} alt="${escapeHtml(title.title)} 海报" loading="lazy" decoding="async" onload="window.handleGridPosterLoad(this)" onerror="window.handlePosterError(this)">
                 ${status ? `<span class="status-badge" data-status="${status}">${watchStatusNames[status]}</span>` : ''}
+                ${rank ? `<span class="rank-badge" data-rank="${rank}">${rank}</span>` : ''}
                 <span class="poster-rating"${tier ? ` data-tier="${tier}"` : ''}><span class="r-num">${rating ? rating.toFixed(1) : '—'}</span><small>IMDb</small></span>
                 <span class="type-tag">${title.type === 'movie' ? '电影' : '剧集'}</span>
             </div>
@@ -712,12 +721,68 @@ async function showDetail(id) {
     modal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
     content.innerHTML = '<div class="detail-loading"><span class="spinner" aria-label="详情加载中"></span></div>';
+    state.currentDetailIndex = state.loadedTitleIds.indexOf(Number(id));
+    updateDetailNav();
+    document.querySelector('.modal-panel')?.scrollTo({ top: 0 });
     document.getElementById('close-modal').focus();
     try {
         currentDetail = await api(`/api/titles/${id}`);
         renderDetail(currentDetail);
     } catch (error) {
         content.innerHTML = `<div class="detail-error"><div><p>${escapeHtml(userMessage(error))}</p><button type="button" class="btn-retry" data-action="retry-detail" data-title-id="${id}">重新加载</button></div></div>`;
+    }
+}
+
+function updateDetailNav() {
+    const prev = document.getElementById('nav-prev');
+    const next = document.getElementById('nav-next');
+    const i = state.currentDetailIndex;
+    const list = state.loadedTitleIds;
+    const has = i >= 0 && list.length > 1;
+    if (prev) prev.disabled = !has || i <= 0;
+    if (next) next.disabled = !has || i >= list.length - 1;
+}
+
+function navigateDetail(direction) {
+    const list = state.loadedTitleIds;
+    const target = state.currentDetailIndex + direction;
+    if (target < 0 || target >= list.length) return;
+    showDetail(list[target]);
+}
+
+function buildFilterParams(extra = {}) {
+    const params = new URLSearchParams({ sort_by: state.sort_by, order: state.order, ...extra });
+    if (state.provider) params.set('provider', state.provider);
+    if (state.type) params.set('type', state.type);
+    if (state.search) params.set('search', state.search);
+    if (state.region) params.set('region', state.region);
+    if (state.rating > 0) params.set('min_rating', String(state.rating));
+    if (state.watchStatus) params.set('watch_status', state.watchStatus);
+    return params;
+}
+
+async function surprisePick() {
+    const btn = document.getElementById('surprise-btn');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.classList.add('loading');
+    try {
+        const head = await api(`/api/titles?${buildFilterParams({ page: '1', limit: '1' })}`);
+        const total = Number(head.total || 0);
+        if (!total) { showToast('当前筛选范围内没有可挑选的作品', 'warn'); return; }
+        const idx = Math.floor(Math.random() * total);
+        const page = Math.floor(idx / 50) + 1;
+        const pos = idx % 50;
+        const data = await api(`/api/titles?${buildFilterParams({ page: String(page), limit: '50' })}`);
+        const title = (data.titles || [])[pos] || (data.titles || [])[0];
+        if (!title) { showToast('未找到作品，再试一次', 'warn'); return; }
+        showDetail(title.id);
+        showToast('为你随机挑了一部');
+    } catch (error) {
+        showToast(userMessage(error), 'error');
+    } finally {
+        btn.disabled = false;
+        btn.classList.remove('loading');
     }
 }
 
@@ -837,6 +902,7 @@ function closeModal() {
     modal.classList.add('hidden');
     document.body.style.overflow = '';
     currentDetail = null;
+    state.currentDetailIndex = -1;
     previousFocus?.focus?.();
 }
 
@@ -972,6 +1038,9 @@ function setupEvents() {
 
     document.getElementById('sync-button').addEventListener('click', triggerSync);
     document.getElementById('close-modal').addEventListener('click', closeModal);
+    document.getElementById('surprise-btn')?.addEventListener('click', surprisePick);
+    document.getElementById('nav-prev')?.addEventListener('click', () => navigateDetail(-1));
+    document.getElementById('nav-next')?.addEventListener('click', () => navigateDetail(1));
     document.getElementById('detail-modal').addEventListener('mousedown', event => {
         if (event.target.id === 'detail-modal') closeModal();
     });
@@ -998,7 +1067,9 @@ function setupEvents() {
     document.getElementById('sort-filter').addEventListener('change', event => { state.sort_by = event.target.value; resetAndLoad(); });
 
     document.addEventListener('keydown', event => {
-        if (event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
+        const modalOpen = !document.getElementById('detail-modal').classList.contains('hidden');
+        const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+        if (event.key === '/' && !typing) {
             event.preventDefault();
             searchInput.focus();
         }
@@ -1006,7 +1077,15 @@ function setupEvents() {
             if (document.querySelector('.status-menu:not(.hidden)')) closeStatusMenus();
             else closeModal();
         }
-        if (event.key === 'Tab' && !document.getElementById('detail-modal').classList.contains('hidden')) trapModalFocus(event);
+        if (modalOpen && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !typing) {
+            event.preventDefault();
+            navigateDetail(event.key === 'ArrowLeft' ? -1 : 1);
+        }
+        if (!modalOpen && (event.key === 'r' || event.key === 'R') && !typing) {
+            event.preventDefault();
+            surprisePick();
+        }
+        if (event.key === 'Tab' && modalOpen) trapModalFocus(event);
     });
 
     window.addEventListener('online', () => {

@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#11110f">
     <meta name="description" content="聚合海外流媒体高分新片，建立你的个人观影清单。">
     <title>片流 · 高分流媒体片单</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=22">
+    <link rel="stylesheet" href="/static/css/style.css?v=23">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -102,6 +102,7 @@
                         <select class="filter-select" id="sort-filter">
                             <option value="release_date">最近上映</option>
                             <option value="rating">评分最高</option>
+                            <option value="added_date">最近收录</option>
                         </select>
                     </label>
                 </div>
@@ -110,7 +111,14 @@
             <div class="active-filters hidden" id="active-filters" aria-label="已应用的筛选条件"></div>
 
             <div class="results-bar">
-                <p id="stats-info" aria-live="polite">正在整理片单…</p>
+                <div class="results-left">
+                    <p id="stats-info" aria-live="polite">正在整理片单…</p>
+                    <button id="surprise-btn" class="surprise-btn" type="button" title="从当前范围随机挑一部（快捷键 R）">
+                        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M5 7h14v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M9 3h6v4H9z"/><circle cx="9" cy="14" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="14" r="1.2" fill="currentColor" stroke="none"/></svg>
+                        <span>惊喜发现</span>
+                        <kbd aria-hidden="true">R</kbd>
+                    </button>
+                </div>
                 <p id="sync-info" aria-live="polite"></p>
             </div>
 
@@ -125,21 +133,35 @@
         </section>
     </main>
 
+    <footer class="site-footer">
+        <div class="footer-inner">
+            <span class="footer-brand">片流 · STREAM INDEX</span>
+            <span class="footer-meta">收录 <strong id="footer-total">—</strong> 部作品 · 数据来自 TMDB 与 IMDb</span>
+            <a class="footer-link" href="https://github.com/mayanzu/streaming-tracker" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </div>
+    </footer>
+
     <button id="back-to-top" type="button" aria-label="返回顶部" title="返回顶部">
         <svg viewBox="0 0 24 24" fill="none"><path d="m6 14 6-6 6 6"/></svg>
     </button>
 
     <div id="detail-modal" class="modal-overlay hidden" role="presentation">
+        <button class="modal-nav modal-nav-prev" id="nav-prev" type="button" aria-label="上一部" disabled>
+            <svg viewBox="0 0 24 24" fill="none"><path d="m15 5-7 7 7 7"/></svg>
+        </button>
         <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
             <button class="modal-close" id="close-modal" type="button" aria-label="关闭详情">
                 <svg viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10M17 7 7 17"/></svg>
             </button>
             <div id="detail-content"></div>
         </section>
+        <button class="modal-nav modal-nav-next" id="nav-next" type="button" aria-label="下一部" disabled>
+            <svg viewBox="0 0 24 24" fill="none"><path d="m9 5 7 7-7 7"/></svg>
+        </button>
     </div>
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 
-    <script src="/static/js/app.js?v=24"></script>
+    <script src="/static/js/app.js?v=25"></script>
 </body>
 </html>
