@@ -1,0 +1,114 @@
+{
+  "url": "http://127.0.0.1:8000/",
+  "ts": "2026-08-01 00:22:02",
+  "loads": {
+    "cold": {
+      "ttfb": 2,
+      "domContentLoaded": 93.80000000074506,
+      "load": 97.19999999925494,
+      "fcp": 152,
+      "lcp": 152,
+      "heap": 10000000,
+      "imgRequests": 7,
+      "imgBytes": 0,
+      "jsBytes": 0,
+      "cssBytes": 35405,
+      "totalBytes": 49822,
+      "totalRequests": 13,
+      "cacheHits": 7,
+      "longtasks": 2,
+      "longtaskMs": 193
+    },
+    "warm": {
+      "ttfb": 2.199999999254942,
+      "domContentLoaded": 13.699999999254942,
+      "load": 16.600000001490116,
+      "fcp": 72,
+      "lcp": 72,
+      "heap": 10000000,
+      "imgRequests": 30,
+      "imgBytes": 0,
+      "jsBytes": 0,
+      "cssBytes": 0,
+      "totalBytes": 14417,
+      "totalRequests": 37,
+      "cacheHits": 0,
+      "longtasks": 0,
+      "longtaskMs": 0
+    },
+    "warm_samples": [
+      {
+        "ttfb": 2.5,
+        "domContentLoaded": 17.5,
+        "load": 21.5,
+        "fcp": 80,
+        "lcp": 80,
+        "heap": 10000000,
+        "imgRequests": 30,
+        "imgBytes": 0,
+        "jsBytes": 0,
+        "cssBytes": 0,
+        "totalBytes": 14417,
+        "totalRequests": 37,
+        "cacheHits": 30,
+        "longtasks": 0,
+        "longtaskMs": 0
+      },
+      {
+        "ttfb": 2.199999999254942,
+        "domContentLoaded": 13.699999999254942,
+        "load": 16.600000001490116,
+        "fcp": 72,
+        "lcp": 72,
+        "heap": 10000000,
+        "imgRequests": 30,
+        "imgBytes": 0,
+        "jsBytes": 0,
+        "cssBytes": 0,
+        "totalBytes": 14417,
+        "totalRequests": 37,
+        "cacheHits": 0,
+        "longtasks": 0,
+        "longtaskMs": 0
+      }
+    ]
+  },
+  "interactions": {
+    "detail_open_ms": {
+      "median": 7.6,
+      "samples": [
+        7.600000001490116,
+        9,
+        7.5
+      ]
+    },
+    "switch_provider_ms": {
+      "median": 96.9,
+      "samples": [
+        96.89999999850988,
+        77.80000000074506,
+        99
+      ]
+    },
+    "search_ms": {
+      "median": 369.5,
+      "samples": [
+        389.3999999985099,
+        355.6000000014901,
+        369.5
+      ]
+    },
+    "status_change_ms": {
+      "median": 31.4,
+      "samples": [
+        26.100000001490116,
+        31.399999998509884,
+        37.20000000298023
+      ]
+    }
+  },
+  "scroll": {
+    "fps": 43.54136429597664,
+    "longtaskDelta": 0
+  }
+}

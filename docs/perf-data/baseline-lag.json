@@ -1,0 +1,115 @@
+{
+  "url": "http://127.0.0.1:8001/",
+  "ts": "2026-08-01 00:31:04",
+  "delay_ms": 60,
+  "loads": {
+    "cold": {
+      "ttfb": 1.800000000745058,
+      "domContentLoaded": 224.69999999925494,
+      "load": 228.39999999850988,
+      "fcp": 260,
+      "lcp": 260,
+      "heap": 10000000,
+      "imgRequests": 11,
+      "imgBytes": 0,
+      "jsBytes": 0,
+      "cssBytes": 25518,
+      "totalBytes": 39967,
+      "totalRequests": 17,
+      "cacheHits": 11,
+      "longtasks": 2,
+      "longtaskMs": 173
+    },
+    "warm": {
+      "ttfb": 1.8999999985098839,
+      "domContentLoaded": 73.19999999925494,
+      "load": 76,
+      "fcp": 144,
+      "lcp": 144,
+      "heap": 10000000,
+      "imgRequests": 15,
+      "imgBytes": 0,
+      "jsBytes": 0,
+      "cssBytes": 0,
+      "totalBytes": 14449,
+      "totalRequests": 22,
+      "cacheHits": 0,
+      "longtasks": 0,
+      "longtaskMs": 0
+    },
+    "warm_samples": [
+      {
+        "ttfb": 2.099999997764826,
+        "domContentLoaded": 81.90000000223517,
+        "load": 84.80000000074506,
+        "fcp": 132,
+        "lcp": 132,
+        "heap": 10000000,
+        "imgRequests": 15,
+        "imgBytes": 0,
+        "jsBytes": 0,
+        "cssBytes": 0,
+        "totalBytes": 14449,
+        "totalRequests": 22,
+        "cacheHits": 8,
+        "longtasks": 0,
+        "longtaskMs": 0
+      },
+      {
+        "ttfb": 1.8999999985098839,
+        "domContentLoaded": 73.19999999925494,
+        "load": 76,
+        "fcp": 144,
+        "lcp": 144,
+        "heap": 10000000,
+        "imgRequests": 15,
+        "imgBytes": 0,
+        "jsBytes": 0,
+        "cssBytes": 0,
+        "totalBytes": 14449,
+        "totalRequests": 22,
+        "cacheHits": 0,
+        "longtasks": 0,
+        "longtaskMs": 0
+      }
+    ]
+  },
+  "interactions": {
+    "detail_open_ms": {
+      "median": 130.5,
+      "samples": [
+        135.69999999925494,
+        129.60000000149012,
+        130.5
+      ]
+    },
+    "switch_provider_ms": {
+      "median": 133.8,
+      "samples": [
+        166.09999999776483,
+        133.80000000074506,
+        109
+      ]
+    },
+    "search_ms": {
+      "median": 432.9,
+      "samples": [
+        450.69999999925494,
+        432.8999999985099,
+        431.29999999701977
+      ]
+    },
+    "status_change_ms": {
+      "median": 101.7,
+      "samples": [
+        94.60000000149012,
+        101.70000000298023,
+        102.80000000074506
+      ]
+    }
+  },
+  "scroll": {
+    "fps": 42.07119741100324,
+    "longtaskDelta": 0
+  }
+}
