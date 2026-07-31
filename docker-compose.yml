@@ -6,6 +6,8 @@ services:
       - "8000:8000"
     volumes:
       - ${TRACKER_DATA_DIR:-./data}:/app/data
+      # 前端静态文件挂载：宿主机编辑静态资源无需重建镜像（优化迭代期用）
+      - ./static:/app/static:ro
     environment:
       - TMDB_API_KEY=${TMDB_API_KEY}
       - OMDB_API_KEY=${OMDB_API_KEY}
