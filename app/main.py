@@ -1,11 +1,12 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import re
+from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, Response
 import logging
 
 from app.api import router
@@ -93,8 +94,48 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Streaming Tracker", description="海外流媒体新片追踪", lifespan=lifespan)
 
+# GZip 压缩：作用于 API JSON 响应（图片已是压缩格式不重复压缩）
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 app.include_router(router)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+# 静态文件：带版本号(?v=) → immutable 一年缓存；其余 → no-cache
+# 自定义路由而非 mount，确保 GZip 中间件与缓存头都生效
+_STATIC_ALLOWED = {".css", ".js", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".ico", ".woff", ".woff2"}
+_STATIC_MIME = {
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+
+
+@app.get("/static/{file_path:path}")
+async def serve_static(file_path: str, request: Request):
+    # 防路径穿越：解析后必须在 STATIC_DIR 内
+    full = (STATIC_DIR / file_path).resolve()
+    try:
+        full.relative_to(STATIC_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=404)
+    if not full.is_file() or full.suffix.lower() not in _STATIC_ALLOWED:
+        raise HTTPException(status_code=404)
+    has_version = "v=" in request.url.query
+    cache_control = "public, max-age=31536000, immutable" if has_version else "no-cache"
+    mime = _STATIC_MIME.get(full.suffix.lower(), "application/octet-stream")
+    data = await asyncio.to_thread(full.read_bytes)
+    return Response(
+        content=data,
+        media_type=mime,
+        headers={"Cache-Control": cache_control, "ETag": f'W/"{full.stat().st_size:x}-{int(full.stat().st_mtime):x}"'},
+    )
 
 
 @app.get("/")

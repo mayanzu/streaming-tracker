@@ -295,10 +295,6 @@ function setupDisplayAdaptation() {
     window.addEventListener('resize', () => scheduleDisplayAdaptation(), { passive: true });
     window.visualViewport?.addEventListener('resize', () => scheduleDisplayAdaptation(), { passive: true });
     window.addEventListener('pageshow', () => scheduleDisplayAdaptation(true));
-    window.setInterval(() => {
-        const currentDpr = Math.max(1, Math.round((window.devicePixelRatio || 1) * 100) / 100);
-        if (currentDpr !== observedDisplayDpr) scheduleDisplayAdaptation(true);
-    }, 750);
 }
 
 function ratingTier(rating) {
@@ -345,6 +341,7 @@ function hydrateStateFromUrl() {
     state.rating = valid(params.get('rating') || '0', ['0', '7', '7.5', '8'], '0');
     state.rating = Number(state.rating);
     state.sort_by = valid(params.get('sort') || 'release_date', ['rating', 'release_date', 'added_date'], 'release_date');
+    state.order = params.get('order') === 'asc' ? 'asc' : 'desc';
     state.watchStatus = valid(params.get('status') || '', ['', 'watchlist', 'watching', 'watched']);
 }
 
@@ -356,6 +353,7 @@ function updateUrl() {
     if (state.region) params.set('region', state.region);
     if (state.rating) params.set('rating', String(state.rating));
     if (state.sort_by !== 'release_date') params.set('sort', state.sort_by);
+    if (state.order === 'asc') params.set('order', 'asc');
     if (state.watchStatus) params.set('status', state.watchStatus);
     const query = params.toString();
     history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
@@ -367,6 +365,11 @@ function syncControlsFromState() {
     document.getElementById('region-filter').value = state.region;
     document.getElementById('rating-filter').value = String(state.rating);
     document.getElementById('sort-filter').value = state.sort_by;
+    const orderBtn = document.getElementById('sort-order-btn');
+    if (orderBtn) {
+        orderBtn.dataset.order = state.order;
+        orderBtn.setAttribute('aria-label', state.order === 'asc' ? '当前为升序，点击切换为降序' : '当前为降序，点击切换为升序');
+    }
     document.querySelectorAll('#type-filters [data-type]').forEach(button => {
         button.classList.toggle('active', button.dataset.type === state.type);
     });
@@ -435,12 +438,11 @@ async function loadProviders() {
         const providers = (data.available || [])
             .filter(key => !hiddenMainFilterProviders.has(key))
             .sort((a, b) => (providerCounts[b] || 0) - (providerCounts[a] || 0));
-        container.innerHTML = providerButtonHtml('', '全部平台', data.total || 0, '');
-        providers.forEach(key => {
-            container.insertAdjacentHTML('beforeend', providerButtonHtml(
+        const html = providerButtonHtml('', '全部平台', data.total || 0, '')
+            + providers.map(key => providerButtonHtml(
                 key, providerNames[key] || key, providerCounts[key] || 0, providerColors[key],
-            ));
-        });
+            )).join('');
+        container.innerHTML = html;
         syncControlsFromState();
     } catch (error) {
         container.innerHTML = '<span class="filter-label">平台列表加载失败</span>';
@@ -549,6 +551,7 @@ async function loadTitles() {
     if (state.loading || !state.hasMore) return;
     const version = state.requestVersion;
     state.loading = true;
+    document.documentElement.dataset.rankSort = state.sort_by === 'rating' ? 'true' : '';
     const loader = document.getElementById('scroll-loader');
     const end = document.getElementById('scroll-end');
     const grid = document.getElementById('titles-grid');
@@ -791,7 +794,11 @@ function renderDetail(title) {
     const tier = ratingTier(rating);
     const safePoster = sanitizeUrl(title.poster_url);
     const poster = safePoster || posterFallback;
-    const detailBackdrop = tmdbPosterUrl(poster, 'w780');
+    const hasRealPoster = Boolean(safePoster) && !safePoster.startsWith('data:image/');
+    const detailBackdrop = hasRealPoster ? tmdbPosterUrl(safePoster, 'w780') : '';
+    const heroBgStyle = detailBackdrop
+        ? `style="background-image:url('${escapeHtml(detailBackdrop)}')"`
+        : 'style="background: linear-gradient(135deg, var(--surface-raised), var(--surface) 70%)"';
     const original = title.original_title && title.original_title !== title.title ? title.original_title : '';
     const providers = (title.providers || []).map(provider => `
         <span class="modal-provider"><span class="p-dot" style="background:${providerColors[provider] || '#7f7d75'}"></span>${escapeHtml(providerNames[provider] || provider)}</span>`).join('');
@@ -801,7 +808,7 @@ function renderDetail(title) {
     const region = primaryRegionLabel(title.origin_countries, true);
     document.getElementById('detail-content').innerHTML = `
         <div class="modal-hero">
-            <div class="modal-hero-bg" style="background-image:url('${escapeHtml(detailBackdrop)}')"></div>
+            <div class="modal-hero-bg" ${heroBgStyle}></div>
             <div class="modal-hero-content">
                 <div class="modal-hero-rating">
                     <div class="rating-ring"${tier ? ` data-tier="${tier}"` : ''}>
@@ -990,9 +997,11 @@ async function checkBootstrapSync() {
 function closeStatusMenus(except = null) {
     document.querySelectorAll('.status-menu:not(.hidden)').forEach(menu => {
         if (menu === except) return;
-        menu.classList.add('hidden');
         const trigger = menu.parentElement.querySelector('.status-menu-trigger');
         trigger?.setAttribute('aria-expanded', 'false');
+        menu.style.opacity = '0';
+        menu.style.transform = 'scale(.94) translateY(-4px)';
+        setTimeout(() => { menu.classList.add('hidden'); menu.style.opacity = ''; menu.style.transform = ''; }, 140);
     });
 }
 
@@ -1015,7 +1024,14 @@ function setupEvents() {
             const menu = menuTrigger.parentElement.querySelector('.status-menu');
             const opening = menu.classList.contains('hidden');
             closeStatusMenus(menu);
-            menu.classList.toggle('hidden', !opening);
+            if (opening) {
+                menu.style.opacity = '0';
+                menu.style.transform = 'scale(.94) translateY(-4px)';
+                menu.classList.remove('hidden');
+                requestAnimationFrame(() => { menu.style.opacity = ''; menu.style.transform = ''; });
+            } else {
+                menu.classList.add('hidden');
+            }
             menuTrigger.setAttribute('aria-expanded', String(opening));
             if (opening) menu.querySelector('button.active, button')?.focus();
             return;
@@ -1041,7 +1057,9 @@ function setupEvents() {
     document.getElementById('surprise-btn')?.addEventListener('click', surprisePick);
     document.getElementById('nav-prev')?.addEventListener('click', () => navigateDetail(-1));
     document.getElementById('nav-next')?.addEventListener('click', () => navigateDetail(1));
-    document.getElementById('detail-modal').addEventListener('mousedown', event => {
+    document.getElementById('detail-modal').addEventListener('pointerdown', event => {
+        // 移动端为底部 sheet 形态，禁用外部点击关闭，避免误关；保留 ESC 和关闭按钮
+        if (window.matchMedia('(max-width: 680px)').matches) return;
         if (event.target.id === 'detail-modal') closeModal();
     });
 
@@ -1065,8 +1083,14 @@ function setupEvents() {
     document.getElementById('region-filter').addEventListener('change', event => { state.region = event.target.value; resetAndLoad(); });
     document.getElementById('rating-filter').addEventListener('change', event => { state.rating = Number(event.target.value); resetAndLoad(); });
     document.getElementById('sort-filter').addEventListener('change', event => { state.sort_by = event.target.value; resetAndLoad(); });
+    document.getElementById('sort-order-btn')?.addEventListener('click', () => {
+        state.order = state.order === 'asc' ? 'desc' : 'asc';
+        syncControlsFromState();
+        resetAndLoad();
+    });
 
     document.addEventListener('keydown', event => {
+        if (event.isComposing) return;
         const modalOpen = !document.getElementById('detail-modal').classList.contains('hidden');
         const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
         if (event.key === '/' && !typing) {
@@ -1137,10 +1161,15 @@ function setupBackToTop() {
 
 function showToast(message, type = 'success') {
     const region = document.getElementById('toast-region');
+    const backToTop = document.getElementById('back-to-top');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
     toast.textContent = message;
     region.appendChild(toast);
-    setTimeout(() => toast.remove(), 3800);
+    if (backToTop?.classList.contains('visible')) backToTop.classList.add('shifted');
+    setTimeout(() => {
+        toast.remove();
+        if (!region.children.length) backToTop?.classList.remove('shifted');
+    }, 3800);
 }

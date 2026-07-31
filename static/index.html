@@ -6,7 +6,11 @@
     <meta name="theme-color" content="#11110f">
     <meta name="description" content="聚合海外流媒体高分新片，建立你的个人观影清单。">
     <title>片流 · 高分流媒体片单</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=23">
+    <link rel="preconnect" href="https://image.tmdb.org" crossorigin>
+    <link rel="dns-prefetch" href="https://image.tmdb.org">
+    <link rel="preload" as="style" href="/static/css/style.css?v=25">
+    <link rel="preload" as="script" href="/static/js/app.js?v=28">
+    <link rel="stylesheet" href="/static/css/style.css?v=25">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -97,14 +101,17 @@
                             <option value="7">7.0 分以上</option>
                         </select>
                     </label>
-                    <label class="select-wrap sort-wrap">
+                    <div class="sort-wrap">
                         <span class="sr-only">排序方式</span>
                         <select class="filter-select" id="sort-filter">
                             <option value="release_date">最近上映</option>
                             <option value="rating">评分最高</option>
                             <option value="added_date">最近收录</option>
                         </select>
-                    </label>
+                        <button class="sort-order-btn" id="sort-order-btn" type="button" data-order="desc" aria-label="切换排序方向" title="切换升降序">
+                            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M4.5 8.5 8 12l3.5-3.5"/></svg>
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -162,6 +169,6 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 
-    <script src="/static/js/app.js?v=25"></script>
+    <script src="/static/js/app.js?v=28" defer></script>
 </body>
 </html>
