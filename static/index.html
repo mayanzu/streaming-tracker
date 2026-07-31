@@ -8,9 +8,9 @@
     <title>片流 · 高分流媒体片单</title>
     <link rel="preconnect" href="https://image.tmdb.org" crossorigin>
     <link rel="dns-prefetch" href="https://image.tmdb.org">
-    <link rel="preload" as="style" href="/static/css/style.css?v=25">
-    <link rel="preload" as="script" href="/static/js/app.js?v=28">
-    <link rel="stylesheet" href="/static/css/style.css?v=25">
+    <link rel="preload" as="style" href="/static/css/style.css?v=29">
+    <link rel="preload" as="script" href="/static/js/app.js?v=32">
+    <link rel="stylesheet" href="/static/css/style.css?v=29">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -77,6 +77,15 @@
             </nav>
 
             <div class="filter-panel" id="filter-bar">
+                <button class="filter-toggle-btn" id="filter-toggle" type="button" aria-expanded="true" aria-controls="filter-body">
+                    <span class="filter-toggle-icon" aria-hidden="true">
+                        <svg viewBox="0 0 16 16" fill="none"><path d="M3 5.5h10M3 8h10M3 10.5h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    </span>
+                    <span class="filter-toggle-label">筛选</span>
+                    <span class="filter-toggle-summary" id="filter-summary"></span>
+                    <svg class="filter-toggle-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <div class="filter-body" id="filter-body">
                 <div class="filter-block provider-block">
                     <span class="filter-label">平台</span>
                     <div class="filter-scroller" id="provider-filters" aria-label="按平台筛选"></div>
@@ -106,16 +115,22 @@
                         <select class="filter-select" id="sort-filter">
                             <option value="release_date">最近上映</option>
                             <option value="rating">评分最高</option>
-                            <option value="added_date">最近收录</option>
                         </select>
                         <button class="sort-order-btn" id="sort-order-btn" type="button" data-order="desc" aria-label="切换排序方向" title="切换升降序">
                             <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M4.5 8.5 8 12l3.5-3.5"/></svg>
                         </button>
                     </div>
                 </div>
+                </div>
             </div>
 
             <div class="active-filters hidden" id="active-filters" aria-label="已应用的筛选条件"></div>
+
+            <div class="recent-row hidden" id="recent-row" aria-label="最近浏览">
+                <span class="recent-row-label">最近浏览</span>
+                <div class="recent-row-scroller" id="recent-scroller"></div>
+                <button class="btn-clear-recent" type="button" data-action="clear-recent">清空</button>
+            </div>
 
             <div class="results-bar">
                 <div class="results-left">
@@ -125,6 +140,14 @@
                         <span>惊喜发现</span>
                         <kbd aria-hidden="true">R</kbd>
                     </button>
+                    <div class="view-toggle" role="group" aria-label="切换列表展示模式">
+                        <button class="view-toggle-btn active" type="button" data-view="grid" aria-label="网格视图" title="网格视图">
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
+                        </button>
+                        <button class="view-toggle-btn" type="button" data-view="list" aria-label="列表视图" title="列表视图（快捷键 G/L）">
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14"/></svg>
+                        </button>
+                    </div>
                 </div>
                 <p id="sync-info" aria-live="polite"></p>
             </div>
@@ -169,6 +192,25 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 
-    <script src="/static/js/app.js?v=28" defer></script>
+    <div id="shortcuts-overlay" class="shortcuts-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+        <div class="shortcuts-panel">
+            <div class="shortcuts-head">
+                <h2 id="shortcuts-title">键盘快捷键</h2>
+                <button class="modal-close" id="close-shortcuts" type="button" aria-label="关闭快捷键帮助">
+                    <svg viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10M17 7 7 17"/></svg>
+                </button>
+            </div>
+            <div class="shortcuts-grid">
+                <div class="shortcut-item"><kbd>/</kbd><span>聚焦搜索</span></div>
+                <div class="shortcut-item"><kbd>R</kbd><span>惊喜发现（随机一部）</span></div>
+                <div class="shortcut-item"><kbd>G / L</kbd><span>切换网格 / 列表视图</span></div>
+                <div class="shortcut-item"><kbd>← / →</kbd><span>详情页切换上一部 / 下一部</span></div>
+                <div class="shortcut-item"><kbd>Esc</kbd><span>关闭浮层 / 详情 / 菜单</span></div>
+                <div class="shortcut-item"><kbd>?</kbd><span>打开本帮助</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js?v=32" defer></script>
 </body>
 </html>

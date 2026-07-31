@@ -107,7 +107,7 @@ def list_titles(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
     provider: str = Query(None),
-    sort_by: str = Query("release_date", pattern="^(added_date|rating|release_date)$"),
+    sort_by: str = Query("release_date", pattern="^(rating|release_date)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     title_type: str = Query(None, alias="type", pattern="^(movie|tv)?$"),
     search: str = Query(None),
