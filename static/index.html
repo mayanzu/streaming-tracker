@@ -8,9 +8,9 @@
     <title>片流 · 高分流媒体片单</title>
     <link rel="preconnect" href="https://image.tmdb.org" crossorigin>
     <link rel="dns-prefetch" href="https://image.tmdb.org">
-    <link rel="preload" as="style" href="/static/css/style.css?v=34">
-    <link rel="preload" as="script" href="/static/js/app.js?v=35">
-    <link rel="stylesheet" href="/static/css/style.css?v=34">
+    <link rel="preload" as="style" href="/static/css/style.css?v=35">
+    <link rel="preload" as="script" href="/static/js/app.js?v=36">
+    <link rel="stylesheet" href="/static/css/style.css?v=35">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -192,6 +192,14 @@
         </button>
     </div>
 
+    <div id="wall-overlay" class="wall-overlay hidden" aria-hidden="true">
+        <button class="wall-close" id="wall-close" type="button" aria-label="退出海报墙" title="退出海报墙">
+            <svg viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10M17 7 7 17"/></svg>
+        </button>
+        <div class="wall-grid" id="wall-grid"></div>
+        <p class="wall-hint">点击任意处返回 · W / Esc 退出</p>
+    </div>
+
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 
     <div id="shortcuts-overlay" class="shortcuts-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
@@ -206,13 +214,14 @@
                 <div class="shortcut-item"><kbd>/</kbd><span>聚焦搜索</span></div>
                 <div class="shortcut-item"><kbd>R</kbd><span>惊喜发现（随机一部）</span></div>
                 <div class="shortcut-item"><kbd>G / L</kbd><span>切换网格 / 列表视图</span></div>
+                <div class="shortcut-item"><kbd>W</kbd><span>海报墙锁屏</span></div>
                 <div class="shortcut-item"><kbd>← / →</kbd><span>详情页切换上一部 / 下一部</span></div>
-                <div class="shortcut-item"><kbd>Esc</kbd><span>关闭浮层 / 详情 / 筛选抽屉</span></div>
+                <div class="shortcut-item"><kbd>Esc</kbd><span>关闭浮层 / 详情 / 筛选抽屉 / 锁屏</span></div>
                 <div class="shortcut-item"><kbd>?</kbd><span>打开本帮助</span></div>
             </div>
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=35" defer></script>
+    <script src="/static/js/app.js?v=36" defer></script>
 </body>
 </html>
