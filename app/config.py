@@ -94,9 +94,6 @@ PENDING_RETRY_DAYS = tuple(
 )
 PROVIDER_STALE_DAYS = int(os.getenv("PROVIDER_STALE_DAYS", "45"))
 
-# 本地同步上传目标。示例：root@192.168.1.2:/app/data/tracker.db
-ROUTER_TARGET = os.getenv("ROUTER_TARGET", "")
-
 # 网站进程内自动同步配置
 SYNC_ENABLED = os.getenv("SYNC_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYNC_HOUR = int(os.getenv("SYNC_HOUR", "6"))
