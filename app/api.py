@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
-from app.database import (
+from app.db import (
     check_database,
     count_titles,
     get_providers,

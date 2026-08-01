@@ -20,7 +20,7 @@ from app.config import (
     SYNC_WINDOW_DAYS,
     TMDB_API_KEY,
 )
-from app.database import (
+from app.db import (
     claim_catalog_window,
     count_titles,
     count_untrusted_titles,
