@@ -11,7 +11,7 @@ import logging
 
 from app.api import router
 from app.config import STATIC_DIR, SYNC_ENABLED, TMDB_API_KEY, TMDB_BASE_URL
-from app.database import init_db
+from app.db import init_db
 
 from app.scheduler import start_scheduler, stop_scheduler
 from app.sync import sync_if_empty

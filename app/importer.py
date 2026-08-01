@@ -2,7 +2,7 @@
 
 import asyncio
 
-from app.database import persist_sync_batch
+from app.db import persist_sync_batch
 from app.fetcher import (
     ExternalRequestError,
     discover_imdb_title,

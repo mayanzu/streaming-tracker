@@ -20,7 +20,7 @@ from app.config import (
     SYNC_BOOTSTRAP_DAYS_BACK,
     SYNC_BOOTSTRAP_MAX_PAGES,
 )
-from app.database import get_latest_finished_sync_run, get_latest_sync_run
+from app.db import get_latest_finished_sync_run, get_latest_sync_run
 from app.sync import get_sync_state, sync_new_titles
 
 logger = logging.getLogger(__name__)
