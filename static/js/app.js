@@ -520,6 +520,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupEvents();
     setupFilterToggle();
     setupModalSwipe();
+    setupWall();
     setupInfiniteScroll();
     setupBackToTop();
     syncControlsFromState();
@@ -1655,8 +1656,15 @@ function setupEvents() {
         if (event.key === 'Escape') {
             if (shortcutsOpen) { toggleShortcuts(false); return; }
             if (document.body.classList.contains('sidebar-open')) { window.__closeSidebar?.(); return; }
+            if (document.body.classList.contains('wall-open')) { closeWall(); return; }
             if (document.querySelector('.status-menu:not(.hidden)')) closeStatusMenus();
             else closeModal();
+        }
+        // 海报墙锁屏开关 W
+        if ((event.key === 'w' || event.key === 'W') && !typing && !modalOpen) {
+            event.preventDefault();
+            if (document.body.classList.contains('wall-open')) closeWall();
+            else openWall();
         }
         // 视图切换快捷键 G/L（打开帮助浮层时也生效，方便直接试用）
         if ((event.key === 'g' || event.key === 'G' || event.key === 'l' || event.key === 'L') && !typing && !modalOpen) {
@@ -1771,4 +1779,105 @@ function showToast(message, type = 'success') {
         toast.remove();
         if (!region.children.length) backToTop?.classList.remove('shifted');
     }, 3800);
+}
+
+/* ---------- 海报墙锁屏 ---------- */
+const WALL_BATCH_SIZE = 20;
+const WALL_SWITCH_MS = 8000;
+let wallTitles = [];
+let wallIndex = 0;
+let wallTimer = null;
+
+function shuffleArray(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
+}
+
+function preloadWallImages(urls) {
+    urls.forEach(url => { const img = new Image(); img.src = url; });
+}
+
+function nextWallBatch() {
+    if (!wallTitles.length) return [];
+    const batch = [];
+    for (let i = 0; i < WALL_BATCH_SIZE; i++) {
+        batch.push(wallTitles[wallIndex % wallTitles.length]);
+        wallIndex += 1;
+    }
+    return batch;
+}
+
+function renderWallBatch() {
+    const grid = document.getElementById('wall-grid');
+    const batch = nextWallBatch();
+    preloadWallImages(batch);
+    grid.innerHTML = batch.map((src, i) =>
+        `<img class="wall-item" src="${escapeHtml(src)}" alt="" loading="eager" decoding="async" onerror="this.remove()" style="animation-delay:${Math.min(i * 35, 500)}ms">`
+    ).join('');
+}
+
+function startWallRotation() {
+    stopWallRotation();
+    wallTimer = setInterval(() => {
+        const overlay = document.getElementById('wall-overlay');
+        overlay.classList.add('is-switching');
+        setTimeout(() => {
+            renderWallBatch();
+            overlay.classList.remove('is-switching');
+        }, 320);
+    }, WALL_SWITCH_MS);
+}
+
+function stopWallRotation() {
+    if (wallTimer) { clearInterval(wallTimer); wallTimer = null; }
+}
+
+async function enterWall() {
+    const overlay = document.getElementById('wall-overlay');
+    overlay.classList.remove('hidden');
+    overlay.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('wall-open');
+    if (!wallTitles.length) {
+        try {
+            const data = await api('/api/titles?limit=100&sort_by=rating&order=desc');
+            wallTitles = shuffleArray((data.titles || []).map(t => sanitizeUrl(t.poster_url)).filter(Boolean));
+            wallIndex = 0;
+        } catch { wallTitles = []; }
+    }
+    renderWallBatch();
+    startWallRotation();
+}
+
+function exitWall() {
+    const overlay = document.getElementById('wall-overlay');
+    overlay.classList.add('hidden');
+    overlay.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('wall-open');
+    stopWallRotation();
+}
+
+function openWall() {
+    if (location.hash !== '#wall') history.replaceState(null, '', '#wall');
+    enterWall();
+}
+
+function closeWall() {
+    if (location.hash === '#wall') history.replaceState(null, '', location.pathname + location.search);
+    exitWall();
+}
+
+function setupWall() {
+    const overlay = document.getElementById('wall-overlay');
+    const closeBtn = document.getElementById('wall-close');
+    if (!overlay) return;
+    overlay.addEventListener('click', closeWall);
+    closeBtn.addEventListener('click', (e) => { e.stopPropagation(); closeWall(); });
+    window.addEventListener('hashchange', () => {
+        if (location.hash === '#wall') enterWall();
+        else exitWall();
+    });
+    if (location.hash === '#wall') enterWall();
 }

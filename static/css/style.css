@@ -764,6 +764,47 @@ main { width: min(100%, var(--content)); margin: 0 auto; padding: 0 var(--pad) 1
 #back-to-top.visible.shifted:hover { transform: translateY(-66px); }
 #back-to-top svg { width: 19px; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
+/* ---------- 海报墙锁屏 ---------- */
+.wall-overlay {
+    position: fixed; inset: 0; z-index: 800; background: #0b0a09;
+}
+.wall-overlay.hidden { display: none; }
+body.wall-open { overflow: hidden; }
+.wall-grid {
+    position: absolute; inset: 0; overflow: hidden; padding: clamp(14px, 2vw, 28px);
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+    grid-auto-rows: 1fr; gap: clamp(8px, 1vw, 14px);
+    opacity: 1; transition: opacity 320ms ease;
+}
+.wall-overlay.is-switching .wall-grid { opacity: 0; }
+.wall-item {
+    width: 100%; height: 100%; object-fit: cover; border-radius: 10px;
+    opacity: 0; animation: wall-in 480ms var(--ease) forwards;
+    box-shadow: 0 10px 30px -14px rgba(0, 0, 0, .8);
+}
+.wall-close {
+    position: absolute; top: 14px; right: 14px; z-index: 2;
+    display: grid; place-items: center; width: 44px; height: 44px;
+    border: 1px solid rgba(255, 255, 255, .12); border-radius: 12px;
+    background: rgba(255, 255, 255, .05); color: rgba(255, 255, 255, .75); cursor: pointer;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    transition: background 160ms, color 160ms, transform 160ms;
+}
+.wall-close:hover { background: rgba(255, 255, 255, .12); color: #fff; }
+.wall-close:active { transform: scale(.94); }
+.wall-close svg { width: 20px; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.wall-hint {
+    position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 2;
+    margin: 0; padding: 8px 14px; border-radius: 999px;
+    background: rgba(0, 0, 0, .45); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    color: rgba(255, 255, 255, .6); font-size: .78rem; letter-spacing: .02em;
+    pointer-events: none;
+}
+@keyframes wall-in {
+    from { opacity: 0; transform: scale(.97); }
+    to { opacity: 1; transform: none; }
+}
+
 /* ---------- 键盘快捷键帮助浮层 ---------- */
 .shortcuts-overlay {
     position: fixed; inset: 0; z-index: 500; display: grid; place-items: center; padding: 20px;
@@ -921,6 +962,8 @@ main { width: min(100%, var(--content)); margin: 0 auto; padding: 0 var(--pad) 1
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 @media (max-width: 680px) {
+    .wall-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 7px; padding: 10px; }
+    .wall-hint { bottom: 12px; font-size: .72rem; white-space: nowrap; }
     .brand-mark { width: 34px; height: 34px; }.brand small { display: none; }
     .header-tools { display: contents; }
     .search-wrap input { height: var(--tap); }

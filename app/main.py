@@ -146,3 +146,11 @@ async def root():
         str(STATIC_DIR / "index.html"),
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@app.get("/wall")
+async def wall():
+    return FileResponse(
+        str(STATIC_DIR / "index.html"),
+        headers={"Cache-Control": "no-cache"},
+    )
