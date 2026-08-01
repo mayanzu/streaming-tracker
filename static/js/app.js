@@ -519,6 +519,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupDisplayAdaptation();
     setupEvents();
     setupFilterToggle();
+    relocateSearch();
+    window.matchMedia('(max-width: 900px)').addEventListener('change', relocateSearch);
     setupModalSwipe();
     setupInfiniteScroll();
     setupBackToTop();
@@ -655,8 +657,11 @@ async function loadProviders() {
 
 function providerButtonHtml(key, name, count, color) {
     return `<button class="filter-btn" type="button" data-provider="${escapeHtml(key)}">
-        ${color ? `<span class="provider-dot" style="background:${color}"></span>` : ''}
-        ${escapeHtml(name)} <span class="count-badge">${Number(count).toLocaleString()}</span>
+        <span class="btn-left">
+            ${color ? `<span class="provider-dot" style="background:${color}"></span>` : ''}
+            <span class="btn-text">${escapeHtml(name)}</span>
+        </span>
+        <span class="count-badge">${Number(count).toLocaleString()}</span>
     </button>`;
 }
 
@@ -1482,32 +1487,44 @@ function updateFilterSummary() {
 
 function setupFilterToggle() {
     const btn = document.getElementById('filter-toggle');
-    const panel = document.getElementById('filter-bar');
-    if (!btn || !panel) return;
-    // 默认在移动端收起（CSS 已处理，JS 只需确保初始状态一致）
-    const isMobile = window.matchMedia('(max-width: 680px)').matches;
-    if (isMobile) {
-        panel.classList.remove('filter-expanded');
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (!btn || !sidebar || !backdrop) return;
+    const close = () => {
+        document.body.classList.remove('sidebar-open');
+        backdrop.classList.add('hidden');
         btn.setAttribute('aria-expanded', 'false');
-    } else {
-        panel.classList.add('filter-expanded');
+    };
+    const open = () => {
+        document.body.classList.add('sidebar-open');
+        backdrop.classList.remove('hidden');
         btn.setAttribute('aria-expanded', 'true');
-    }
+    };
     btn.addEventListener('click', () => {
-        const expanded = btn.getAttribute('aria-expanded') === 'true';
-        btn.setAttribute('aria-expanded', String(!expanded));
-        panel.classList.toggle('filter-expanded', !expanded);
+        if (document.body.classList.contains('sidebar-open')) close();
+        else open();
     });
-    // 当用户主动操作筛选控件时自动展开
-    const filterInputs = panel.querySelectorAll('.filter-btn, .filter-select, #sort-order-btn');
-    filterInputs.forEach(input => {
-        input.addEventListener('focus', () => {
-            if (isMobile && btn.getAttribute('aria-expanded') !== 'true') {
-                btn.setAttribute('aria-expanded', 'true');
-                panel.classList.add('filter-expanded');
-            }
-        }, { once: false });
+    backdrop.addEventListener('click', close);
+    document.addEventListener('click', (e) => {
+        if (document.body.classList.contains('sidebar-open') && e.target.closest('#sidebar')) close();
     });
+    const desktopMq = window.matchMedia('(min-width: 901px)');
+    desktopMq.addEventListener('change', (e) => { if (e.matches) close(); });
+    window.__closeSidebar = close;
+    // 移动端显示抽屉开关，桌面隐藏
+    const syncVis = () => btn.classList.toggle('hidden', desktopMq.matches);
+    syncVis();
+    desktopMq.addEventListener('change', syncVis);
+}
+
+function relocateSearch() {
+    const wrap = document.getElementById('search-wrap');
+    const headerSlot = document.getElementById('header-search-slot');
+    const sidebarSlot = document.getElementById('sidebar-search-slot');
+    if (!wrap || !headerSlot || !sidebarSlot) return;
+    const toHeader = window.matchMedia('(max-width: 900px)').matches;
+    const target = toHeader ? headerSlot : sidebarSlot;
+    if (wrap.parentElement !== target) target.appendChild(wrap);
 }
 
 async function checkBootstrapSync() {
@@ -1652,6 +1669,7 @@ function setupEvents() {
         }
         if (event.key === 'Escape') {
             if (shortcutsOpen) { toggleShortcuts(false); return; }
+            if (document.body.classList.contains('sidebar-open')) { window.__closeSidebar?.(); return; }
             if (document.querySelector('.status-menu:not(.hidden)')) closeStatusMenus();
             else closeModal();
         }
