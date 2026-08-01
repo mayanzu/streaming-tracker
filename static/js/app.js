@@ -1879,5 +1879,9 @@ function setupWall() {
         if (location.hash === '#wall') enterWall();
         else exitWall();
     });
-    if (location.hash === '#wall') enterWall();
+    // 入口：/wall 路径或 #wall hash 都直接进入锁屏，并归一化 URL
+    if (location.hash === '#wall' || location.pathname === '/wall') {
+        history.replaceState(null, '', location.pathname === '/wall' ? '/#wall' : location.pathname + location.search + '#wall');
+        enterWall();
+    }
 }
