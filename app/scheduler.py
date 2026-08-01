@@ -1,5 +1,6 @@
 """In-process scheduler for recurring TMDB synchronization."""
 
+import asyncio
 import logging
 
 import pytz
@@ -80,8 +81,9 @@ async def get_scheduler_status(scheduler):
     if scheduler and scheduler.running:
         job = scheduler.get_job(JOB_ID)
     next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
-    latest_finished_sync = get_latest_finished_sync_run()
-    latest_sync = get_latest_sync_run()
+    # SQLite 调用放线程池，避免阻塞事件循环（生产大库查询）
+    latest_finished_sync = await asyncio.to_thread(get_latest_finished_sync_run)
+    latest_sync = await asyncio.to_thread(get_latest_sync_run)
 
     return {
         "enabled": SYNC_ENABLED,

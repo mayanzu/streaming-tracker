@@ -56,6 +56,10 @@ async def import_title_by_imdb(imdb_reference):
             detail = "; ".join(persistence["errors"]) or "unknown persistence error"
             raise TitleImportError("persistence_failed", f"作品保存失败：{detail}")
 
+        if not qualified and not pending:
+            raise TitleImportError(
+                "persistence_failed", "作品既未入库也未进入待处理队列，请稍后重试"
+            )
         title = (qualified or pending)[0]
         if qualified:
             action = next(
