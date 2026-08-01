@@ -229,9 +229,9 @@ main { width: 100%; min-width: 0; padding: 0 0 60px; }
 /* 首屏氛围：右上角品牌光晕 + 细噪点纹理，纯 CSS 零请求 */
 .intro::before {
     content: ""; position: absolute; z-index: 0; pointer-events: none;
-    inset: -34% -8% auto auto; width: min(760px, 78vw); aspect-ratio: 1;
-    background: radial-gradient(circle at 68% 30%, rgba(224, 120, 86, .17), rgba(224, 120, 86, .05) 45%, transparent 68%);
-    filter: blur(6px);
+    inset: -42% -12% auto auto; width: min(640px, 64vw); aspect-ratio: 1;
+    background: radial-gradient(circle at 66% 28%, rgba(224, 120, 86, .10), rgba(224, 120, 86, .03) 42%, transparent 58%);
+    filter: blur(14px);
 }
 .intro::after {
     content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
