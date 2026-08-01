@@ -1781,9 +1781,9 @@ function showToast(message, type = 'success') {
     }, 3800);
 }
 
-/* ---------- 海报墙锁屏 ---------- */
-const WALL_BATCH_SIZE = 20;
-const WALL_SWITCH_MS = 8000;
+/* ---------- 海报墙锁屏（Netflix 屏保风格） ---------- */
+const WALL_BATCH_SIZE = 30;
+const WALL_SWITCH_MS = 15000;
 let wallTitles = [];
 let wallIndex = 0;
 let wallTimer = null;
@@ -1815,8 +1815,12 @@ function renderWallBatch() {
     const batch = nextWallBatch();
     preloadWallImages(batch);
     grid.innerHTML = batch.map((src, i) =>
-        `<img class="wall-item" src="${escapeHtml(src)}" alt="" loading="eager" decoding="async" onerror="this.remove()" style="animation-delay:${Math.min(i * 35, 500)}ms">`
+        `<img class="wall-item" src="${escapeHtml(src)}" alt="" loading="eager" decoding="async" onerror="this.remove()" style="animation-delay:${Math.min(i * 45, 800)}ms">`
     ).join('');
+    // 重启整墙缓慢平移（Ken Burns）
+    grid.classList.remove('is-panning');
+    void grid.offsetWidth;
+    grid.classList.add('is-panning');
 }
 
 function startWallRotation() {
@@ -1827,7 +1831,7 @@ function startWallRotation() {
         setTimeout(() => {
             renderWallBatch();
             overlay.classList.remove('is-switching');
-        }, 320);
+        }, 260);
     }, WALL_SWITCH_MS);
 }
 
