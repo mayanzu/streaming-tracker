@@ -519,8 +519,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupDisplayAdaptation();
     setupEvents();
     setupFilterToggle();
-    relocateSearch();
-    window.matchMedia('(max-width: 900px)').addEventListener('change', relocateSearch);
     setupModalSwipe();
     setupInfiniteScroll();
     setupBackToTop();
@@ -657,11 +655,8 @@ async function loadProviders() {
 
 function providerButtonHtml(key, name, count, color) {
     return `<button class="filter-btn" type="button" data-provider="${escapeHtml(key)}">
-        <span class="btn-left">
-            ${color ? `<span class="provider-dot" style="background:${color}"></span>` : ''}
-            <span class="btn-text">${escapeHtml(name)}</span>
-        </span>
-        <span class="count-badge">${Number(count).toLocaleString()}</span>
+        ${color ? `<span class="provider-dot" style="background:${color}"></span>` : ''}
+        ${escapeHtml(name)} <span class="count-badge">${Number(count).toLocaleString()}</span>
     </button>`;
 }
 
@@ -1487,9 +1482,9 @@ function updateFilterSummary() {
 
 function setupFilterToggle() {
     const btn = document.getElementById('filter-toggle');
-    const sidebar = document.getElementById('sidebar');
+    const panel = document.getElementById('filter-bar');
     const backdrop = document.getElementById('sidebar-backdrop');
-    if (!btn || !sidebar || !backdrop) return;
+    if (!btn || !panel || !backdrop) return;
     const close = () => {
         document.body.classList.remove('sidebar-open');
         backdrop.classList.add('hidden');
@@ -1506,7 +1501,7 @@ function setupFilterToggle() {
     });
     backdrop.addEventListener('click', close);
     document.addEventListener('click', (e) => {
-        if (document.body.classList.contains('sidebar-open') && e.target.closest('#sidebar')) close();
+        if (document.body.classList.contains('sidebar-open') && e.target.closest('#filter-bar')) close();
     });
     const desktopMq = window.matchMedia('(min-width: 901px)');
     desktopMq.addEventListener('change', (e) => { if (e.matches) close(); });
@@ -1515,16 +1510,6 @@ function setupFilterToggle() {
     const syncVis = () => btn.classList.toggle('hidden', desktopMq.matches);
     syncVis();
     desktopMq.addEventListener('change', syncVis);
-}
-
-function relocateSearch() {
-    const wrap = document.getElementById('search-wrap');
-    const headerSlot = document.getElementById('header-search-slot');
-    const sidebarSlot = document.getElementById('sidebar-search-slot');
-    if (!wrap || !headerSlot || !sidebarSlot) return;
-    const toHeader = window.matchMedia('(max-width: 900px)').matches;
-    const target = toHeader ? headerSlot : sidebarSlot;
-    if (wrap.parentElement !== target) target.appendChild(wrap);
 }
 
 async function checkBootstrapSync() {
