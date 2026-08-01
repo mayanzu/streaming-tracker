@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.database import (
     check_database,
+    count_titles,
     get_providers,
     get_stats,
     get_title_detail,
@@ -172,7 +173,8 @@ def list_providers():
     return {
         "providers": providers,
         "available": list(dict.fromkeys((*MAIN_FILTER_PROVIDERS, *discovered))),
-        "total": get_stats()["total"],
+        # 只用轻量 COUNT，避免为 total 重复执行完整 get_stats 聚合
+        "total": count_titles(),
     }
 
 

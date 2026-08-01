@@ -14,6 +14,7 @@ from app.config import (
     SYNC_CATALOG_SCAN_ENABLED,
     SYNC_CATALOG_WINDOW_DAYS,
     SYNC_DAYS_BACK,
+    SYNC_ENABLED,
     SYNC_INCREMENTAL_OVERLAP_DAYS,
     SYNC_MAX_PAGES,
     SYNC_WINDOW_DAYS,
@@ -44,7 +45,6 @@ from app.fetcher import (
 )
 
 logger = logging.getLogger(__name__)
-_sync_lock = asyncio.Lock()
 _state_lock = asyncio.Lock()
 _sync_state = {
     "running": False,
@@ -141,171 +141,182 @@ async def sync_new_titles(
     window_days=SYNC_WINDOW_DAYS,
     reason="scheduled",
 ):
-    if _sync_lock.locked():
-        logger.info("TMDB sync is already running; skipping overlapping run")
-        return {"processed": 0, "skipped": 0, "reason": "already_running"}
+    # 预占式防并发：在锁内检查并原子置 running=True，杜绝"检查-获取锁"
+    # 窗口内两个调用同时进入的竞态；finally 中无论成败都复位。
+    async with _state_lock:
+        if _sync_state["running"]:
+            logger.info("TMDB sync is already running; skipping overlapping run")
+            return {"processed": 0, "skipped": 0, "reason": "already_running"}
+        _sync_state.update({
+            "running": True,
+            "current_run_id": None,
+            "current_reason": reason,
+            "last_started_at": _now_iso(),
+            "last_finished_at": None,
+            "last_result": None,
+        })
 
-    async with _sync_lock:
+    sync_run_id = None
+    result = None
+    try:
         await asyncio.to_thread(init_db)
         effective_days_back = await asyncio.to_thread(_incremental_days_back, reason, days_back)
         sync_run_id = await asyncio.to_thread(
             create_sync_run, reason, effective_days_back, max_pages, window_days,
         )
         async with _state_lock:
-            _sync_state.update({
-                "running": True,
-                "current_run_id": sync_run_id,
-                "current_reason": reason,
-                "last_started_at": _now_iso(),
-                "last_finished_at": None,
-                "last_result": None,
-            })
+            _sync_state["current_run_id"] = sync_run_id
 
-        result = None
-        try:
-            if not TMDB_API_KEY:
-                result = {
-                    "processed": 0, "skipped": 0, "reason": "missing_tmdb_api_key",
-                    "error": "TMDB_API_KEY is not configured",
-                }
-                await asyncio.to_thread(finish_sync_run, sync_run_id, "failed", result)
-                return result
-
-            catalog_range = None
-            if SYNC_CATALOG_SCAN_ENABLED:
-                catalog_range = await asyncio.to_thread(
-                    claim_catalog_window,
-                    SYNC_CATALOG_SCAN_DAYS_BACK,
-                    SYNC_CATALOG_WINDOW_DAYS,
-                    effective_days_back,
-                )
-            logger.info(
-                "Starting sync reason=%s recent_days=%s catalog_range=%s max_pages=%s",
-                reason, effective_days_back, catalog_range, max_pages,
-            )
-
-            fetch_stats = empty_fetch_stats()
-            processed = skipped = 0
-
-            async def report_progress(progress):
-                stats = progress.get("stats") or fetch_stats
-                db_progress = dict(progress)
-                db_progress.update({"stats": stats, "processed": processed, "skipped": skipped})
-                await asyncio.to_thread(update_sync_run_progress, sync_run_id, db_progress)
-                snapshot = _result_from_stats(
-                    reason, processed, skipped, stats,
-                    {
-                        "phase": progress.get("phase"),
-                        "current_provider": progress.get("provider"),
-                        "current_provider_index": progress.get("provider_index", 0),
-                        "provider_total": progress.get(
-                            "provider_total", len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS)
-                        ),
-                    },
-                )
-                async with _state_lock:
-                    _sync_state["last_result"] = snapshot
-
-            discovered = await discover_all_providers(
-                days_back=effective_days_back,
-                max_pages=max_pages,
-                window_days=window_days,
-                catalog_range=catalog_range,
-                progress_callback=report_progress,
-            )
-            fetch_stats = discovered["stats"]
-
-            candidates_by_key = {
-                (item["type"], item["tmdb_id"]): item for item in discovered["titles"]
-            }
-            due_pending = await asyncio.to_thread(get_due_pending_titles)
-            for pending_item in due_pending:
-                key = (pending_item["type"], pending_item["tmdb_id"])
-                if key in candidates_by_key:
-                    _merge_candidate(candidates_by_key[key], pending_item)
-                else:
-                    candidates_by_key[key] = pending_item
-            fetch_stats["unique_discovered"] = len(candidates_by_key)
-
-            identities = list(candidates_by_key)
-            cached_titles = await asyncio.to_thread(get_title_cache, identities)
-            enriched = await enrich_titles(
-                list(candidates_by_key.values()),
-                cached_titles=cached_titles,
-                progress_callback=report_progress,
-            )
-            merge_fetch_stats(fetch_stats, enriched["stats"])
-            fetch_stats["qualified"] = len(enriched["titles"])
-            fetch_stats["pending"] = len(enriched["pending"])
-
-            persistence = await asyncio.to_thread(
-                persist_sync_batch, enriched["titles"], enriched["pending"],
-            )
-            processed = persistence["processed"]
-            skipped = persistence["skipped"]
-            for key in ("inserted", "updated", "unchanged", "provider_expired"):
-                fetch_stats[key] = persistence[key]
-            fetch_stats["errors"].extend(persistence["errors"])
-
-            await asyncio.to_thread(
-                update_sync_run_progress,
-                sync_run_id,
-                {
-                    "phase": "persisted",
-                    "provider": None,
-                    "provider_index": len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS),
-                    "provider_total": len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS),
-                    "processed": processed,
-                    "skipped": skipped,
-                    "inserted": fetch_stats["inserted"],
-                    "updated": fetch_stats["updated"],
-                    "unchanged": fetch_stats["unchanged"],
-                    "provider_expired": fetch_stats["provider_expired"],
-                    "stats": fetch_stats,
-                },
-            )
-
-            for error in fetch_stats.get("errors", []):
-                await asyncio.to_thread(record_sync_error, sync_run_id, "sync", error)
-
-            result = _result_from_stats(
-                reason, processed, skipped, fetch_stats,
-                {
-                    "catalog_range": [value.isoformat() for value in catalog_range]
-                    if catalog_range else None,
-                },
-            )
-            status = "partial" if fetch_stats.get("errors") or skipped else "success"
-            await asyncio.to_thread(finish_sync_run, sync_run_id, status, result)
-            logger.info(
-                "Sync finished status=%s unique=%s inserted=%s updated=%s unchanged=%s pending=%s",
-                status, result["unique_discovered"], result["inserted"], result["updated"],
-                result["unchanged"], result["pending"],
-            )
-            return result
-        except Exception as exc:
-            logger.exception("TMDB sync failed")
+        if not TMDB_API_KEY:
             result = {
-                "processed": 0,
-                "skipped": 0,
-                "reason": "sync_failed",
-                "error": f"{type(exc).__name__}: {exc}",
+                "processed": 0, "skipped": 0, "reason": "missing_tmdb_api_key",
+                "error": "TMDB_API_KEY is not configured",
             }
             await asyncio.to_thread(finish_sync_run, sync_run_id, "failed", result)
             return result
-        finally:
+
+        catalog_range = None
+        if SYNC_CATALOG_SCAN_ENABLED:
+            catalog_range = await asyncio.to_thread(
+                claim_catalog_window,
+                SYNC_CATALOG_SCAN_DAYS_BACK,
+                SYNC_CATALOG_WINDOW_DAYS,
+                effective_days_back,
+            )
+        logger.info(
+            "Starting sync reason=%s recent_days=%s catalog_range=%s max_pages=%s",
+            reason, effective_days_back, catalog_range, max_pages,
+        )
+
+        fetch_stats = empty_fetch_stats()
+        processed = skipped = 0
+
+        async def report_progress(progress):
+            stats = progress.get("stats") or fetch_stats
+            db_progress = dict(progress)
+            db_progress.update({"stats": stats, "processed": processed, "skipped": skipped})
+            await asyncio.to_thread(update_sync_run_progress, sync_run_id, db_progress)
+            snapshot = _result_from_stats(
+                reason, processed, skipped, stats,
+                {
+                    "phase": progress.get("phase"),
+                    "current_provider": progress.get("provider"),
+                    "current_provider_index": progress.get("provider_index", 0),
+                    "provider_total": progress.get(
+                        "provider_total", len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS)
+                    ),
+                },
+            )
             async with _state_lock:
-                _sync_state.update({
-                    "running": False,
-                    "current_run_id": None,
-                    "current_reason": None,
-                    "last_finished_at": _now_iso(),
-                    "last_result": result,
-                })
+                _sync_state["last_result"] = snapshot
+
+        discovered = await discover_all_providers(
+            days_back=effective_days_back,
+            max_pages=max_pages,
+            window_days=window_days,
+            catalog_range=catalog_range,
+            progress_callback=report_progress,
+        )
+        fetch_stats = discovered["stats"]
+
+        candidates_by_key = {
+            (item["type"], item["tmdb_id"]): item for item in discovered["titles"]
+        }
+        due_pending = await asyncio.to_thread(get_due_pending_titles)
+        for pending_item in due_pending:
+            key = (pending_item["type"], pending_item["tmdb_id"])
+            if key in candidates_by_key:
+                _merge_candidate(candidates_by_key[key], pending_item)
+            else:
+                candidates_by_key[key] = pending_item
+        fetch_stats["unique_discovered"] = len(candidates_by_key)
+
+        identities = list(candidates_by_key)
+        cached_titles = await asyncio.to_thread(get_title_cache, identities)
+        enriched = await enrich_titles(
+            list(candidates_by_key.values()),
+            cached_titles=cached_titles,
+            progress_callback=report_progress,
+        )
+        merge_fetch_stats(fetch_stats, enriched["stats"])
+        fetch_stats["qualified"] = len(enriched["titles"])
+        fetch_stats["pending"] = len(enriched["pending"])
+
+        persistence = await asyncio.to_thread(
+            persist_sync_batch, enriched["titles"], enriched["pending"],
+        )
+        processed = persistence["processed"]
+        skipped = persistence["skipped"]
+        for key in ("inserted", "updated", "unchanged", "provider_expired"):
+            fetch_stats[key] = persistence[key]
+        fetch_stats["errors"].extend(persistence["errors"])
+
+        await asyncio.to_thread(
+            update_sync_run_progress,
+            sync_run_id,
+            {
+                "phase": "persisted",
+                "provider": None,
+                "provider_index": len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS),
+                "provider_total": len(PROVIDERS) + int(DISCOVER_ALL_PROVIDERS),
+                "processed": processed,
+                "skipped": skipped,
+                "inserted": fetch_stats["inserted"],
+                "updated": fetch_stats["updated"],
+                "unchanged": fetch_stats["unchanged"],
+                "provider_expired": fetch_stats["provider_expired"],
+                "stats": fetch_stats,
+            },
+        )
+
+        for error in fetch_stats.get("errors", []):
+            await asyncio.to_thread(record_sync_error, sync_run_id, "sync", error)
+
+        result = _result_from_stats(
+            reason, processed, skipped, fetch_stats,
+            {
+                "catalog_range": [value.isoformat() for value in catalog_range]
+                if catalog_range else None,
+            },
+        )
+        status = "partial" if fetch_stats.get("errors") or skipped else "success"
+        await asyncio.to_thread(finish_sync_run, sync_run_id, status, result)
+        logger.info(
+            "Sync finished status=%s unique=%s inserted=%s updated=%s unchanged=%s pending=%s",
+            status, result["unique_discovered"], result["inserted"], result["updated"],
+            result["unchanged"], result["pending"],
+        )
+        return result
+    except Exception as exc:
+        logger.exception("TMDB sync failed")
+        result = {
+            "processed": 0,
+            "skipped": 0,
+            "reason": "sync_failed",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        await asyncio.to_thread(finish_sync_run, sync_run_id, "failed", result)
+        return result
+    finally:
+        async with _state_lock:
+            _sync_state.update({
+                "running": False,
+                "current_run_id": None,
+                "current_reason": None,
+                "last_finished_at": _now_iso(),
+                "last_result": result,
+            })
 
 
 async def sync_if_empty():
     await asyncio.to_thread(init_db)
+
+    # 同步子系统整体禁用（软路由部署默认）或无 API key 时，跳过全部
+    # 清库/重建逻辑，避免误删已有数据后无力重建。
+    if not SYNC_ENABLED or not TMDB_API_KEY:
+        logger.info("TMDB sync is disabled; skipping bootstrap logic")
+        return {"processed": 0, "skipped": 0, "reason": "sync_disabled"}
+
     latest_sync = await asyncio.to_thread(get_latest_sync_run)
 
     if _is_incomplete_bootstrap(latest_sync):

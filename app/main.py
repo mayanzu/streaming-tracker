@@ -75,7 +75,8 @@ async def _validate_api_key():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up...")
-    init_db()
+    # init_db 含建表/迁移/大库索引检查，放线程池避免阻塞事件循环
+    await asyncio.to_thread(init_db)
     # 路由器场景 SYNC_ENABLED=false 时跳过对 api.themoviedb.org 的启动校验，
     # 避免无外网 / 无 key 时浪费一次 10s HTTPS 超时
     if SYNC_ENABLED:
@@ -131,10 +132,11 @@ async def serve_static(file_path: str, request: Request):
     cache_control = "public, max-age=31536000, immutable" if has_version else "no-cache"
     mime = _STATIC_MIME.get(full.suffix.lower(), "application/octet-stream")
     data = await asyncio.to_thread(full.read_bytes)
+    stat = full.stat()
     return Response(
         content=data,
         media_type=mime,
-        headers={"Cache-Control": cache_control, "ETag": f'W/"{full.stat().st_size:x}-{int(full.stat().st_mtime):x}"'},
+        headers={"Cache-Control": cache_control, "ETag": f'W/"{stat.st_size:x}-{int(stat.st_mtime):x}"'},
     )
 
 
