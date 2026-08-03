@@ -1,11 +1,19 @@
 """作品富化：详情抓取、评分合并、缓存判断与整体编排（discover → enrich → 结果）。"""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import httpx
 
-from app.config import ENRICH_BATCH_SIZE, ENRICH_CONCURRENCY, MIN_IMDB_RATING, TMDB_API_KEY
+from app.config import (
+    ENRICH_BATCH_SIZE,
+    ENRICH_CONCURRENCY,
+    MIN_IMDB_RATING,
+    MIN_IMDB_VOTES,
+    MIN_IMDB_VOTES_GRACE,
+    NEW_TITLE_GRACE_DAYS,
+    TMDB_API_KEY,
+)
 from app.fetcher.common import (
     _cached_title,
     _is_fresh,
@@ -77,6 +85,20 @@ async def _fetch_details(candidate, client):
     except Exception as exc:
         title["enrichment_error"] = f"{type(exc).__name__}: {exc}"
         return title
+
+
+def _min_votes_for(title):
+    """对新剧（首播 ≤NEW_TITLE_GRACE_DAYS 天）放宽 votes 门槛。"""
+    release_date = title.get("release_date")
+    if not release_date:
+        return MIN_IMDB_VOTES
+    try:
+        rd = date.fromisoformat(release_date)
+    except ValueError:
+        return MIN_IMDB_VOTES
+    if (date.today() - rd).days <= NEW_TITLE_GRACE_DAYS:
+        return MIN_IMDB_VOTES_GRACE
+    return MIN_IMDB_VOTES
 
 
 async def enrich_titles(candidates, cached_titles=None, progress_callback=None):
@@ -185,6 +207,12 @@ async def enrich_titles(candidates, cached_titles=None, progress_callback=None):
             title["pending_reason"] = "low_rating"
             pending.append(title)
             stats["low_rating"] += 1
+            continue
+        min_votes = _min_votes_for(title)
+        if votes < min_votes:
+            title["pending_reason"] = "insufficient_votes"
+            pending.append(title)
+            stats["no_rating"] += 1
             continue
         qualified.append(title)
 

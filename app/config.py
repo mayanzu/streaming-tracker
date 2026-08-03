@@ -79,6 +79,9 @@ ALL_PROVIDER_WATCH_REGIONS = tuple(
 MIN_IMDB_RATING = float(os.getenv("MIN_IMDB_RATING", "7.0"))
 MIN_IMDB_VOTES = int(os.getenv("MIN_IMDB_VOTES", "50"))
 OMDB_MIN_VOTES = int(os.getenv("OMDB_MIN_VOTES", "100"))
+# 新剧宽限期：首播 ≤N 天内放宽 votes 门槛，避免新剧因票数不足被 pending
+NEW_TITLE_GRACE_DAYS = int(os.getenv("NEW_TITLE_GRACE_DAYS", "30"))
+MIN_IMDB_VOTES_GRACE = int(os.getenv("MIN_IMDB_VOTES_GRACE", "5"))
 ENRICH_CONCURRENCY = int(os.getenv("ENRICH_CONCURRENCY", "30"))
 ENRICH_BATCH_SIZE = max(1, int(os.getenv("ENRICH_BATCH_SIZE", "200")))
 DISCOVER_CONCURRENCY = int(os.getenv("DISCOVER_CONCURRENCY", "10"))
