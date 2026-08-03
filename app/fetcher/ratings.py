@@ -8,10 +8,8 @@ import httpx
 from app.config import (
     ENRICH_CONCURRENCY,
     HTTP_RETRIES,
-    MIN_IMDB_VOTES,
     OMDB_API_KEY,
     OMDB_BASE_URL,
-    OMDB_MIN_VOTES,
 )
 from app.fetcher.common import RETRYABLE_STATUS_CODES, ExternalRequestError, _retry_delay
 
@@ -73,7 +71,7 @@ async def get_imdb_ratings(imdb_ids, client=None):
             errors[imdb_id] = f"IMDb dataset: {type(exc).__name__}"
 
     for imdb_id, (rating, votes) in local.items():
-        if rating is not None and votes >= MIN_IMDB_VOTES:
+        if rating is not None:
             resolved[imdb_id] = (rating, votes, "imdb")
 
     missing = requested - set(resolved)
@@ -86,7 +84,7 @@ async def get_imdb_ratings(imdb_ids, client=None):
         try:
             async with semaphore:
                 rating, votes = await fetch_omdb(imdb_id, client=client)
-            if rating is not None and votes >= OMDB_MIN_VOTES:
+            if rating is not None:
                 return imdb_id, (rating, votes, "omdb"), None
             return imdb_id, None, None
         except Exception as exc:
