@@ -87,18 +87,21 @@ async def _fetch_details(candidate, client):
         return title
 
 
-def _min_votes_for(title):
-    """对新剧（首播 ≤NEW_TITLE_GRACE_DAYS 天）放宽 votes 门槛。"""
+def _is_in_grace_period(title):
+    """新剧（首播 ≤NEW_TITLE_GRACE_DAYS 天）。"""
     release_date = title.get("release_date")
     if not release_date:
-        return MIN_IMDB_VOTES
+        return False
     try:
         rd = date.fromisoformat(release_date)
     except ValueError:
-        return MIN_IMDB_VOTES
-    if (date.today() - rd).days <= NEW_TITLE_GRACE_DAYS:
-        return MIN_IMDB_VOTES_GRACE
-    return MIN_IMDB_VOTES
+        return False
+    return (date.today() - rd).days <= NEW_TITLE_GRACE_DAYS
+
+
+def _min_votes_for(title):
+    """对新剧（首播 ≤NEW_TITLE_GRACE_DAYS 天）放宽 votes 门槛。"""
+    return MIN_IMDB_VOTES_GRACE if _is_in_grace_period(title) else MIN_IMDB_VOTES
 
 
 async def enrich_titles(candidates, cached_titles=None, progress_callback=None):
@@ -181,6 +184,9 @@ async def enrich_titles(candidates, cached_titles=None, progress_callback=None):
 
         imdb_id = title.get("imdb_id")
         if not imdb_id:
+            if _is_in_grace_period(title):
+                qualified.append(title)
+                continue
             title["pending_reason"] = "missing_imdb_id"
             pending.append(title)
             stats["no_rating"] += 1
@@ -189,13 +195,17 @@ async def enrich_titles(candidates, cached_titles=None, progress_callback=None):
         rating_data = ratings.get(imdb_id)
         if not rating_data:
             error = rating_errors.get(imdb_id)
-            title["pending_reason"] = "request_failed" if error else "missing_rating"
-            title["last_error"] = error
-            pending.append(title)
             if error:
+                title["pending_reason"] = "request_failed"
+                title["last_error"] = error
+                pending.append(title)
                 stats["request_failed"] += 1
                 stats["errors"].append(f"rating imdb_id={imdb_id}: {error}")
+            elif _is_in_grace_period(title):
+                qualified.append(title)
             else:
+                title["pending_reason"] = "missing_rating"
+                pending.append(title)
                 stats["no_rating"] += 1
             continue
 
