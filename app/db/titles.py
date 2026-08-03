@@ -2,6 +2,7 @@
 
 from datetime import date
 
+from app.config import NEW_TITLE_GRACE_DAYS
 from app.db.connection import get_db_connection
 from app.db.queries import _fetch_country_map
 from app.db.utils import _normalize_country_codes, _normalize_rating_source, _utc_now
@@ -36,9 +37,18 @@ def insert_title(title_data, conn=None):
     if countries_supplied and not countries_synced_at:
         countries_synced_at = title_data.get("last_synced_at") or _utc_now()
     if rating is None:
-        if owns_conn:
-            conn.close()
-        raise ValueError("trusted IMDb rating is required")
+        release_date = title_data.get("release_date")
+        in_grace = False
+        if release_date:
+            try:
+                if (date.today() - date.fromisoformat(release_date)).days <= NEW_TITLE_GRACE_DAYS:
+                    in_grace = True
+            except ValueError:
+                pass
+        if not in_grace:
+            if owns_conn:
+                conn.close()
+            raise ValueError("trusted IMDb rating is required")
 
     try:
         if owns_conn:
