@@ -221,10 +221,15 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_availability_last_seen ON title_provider_availability(last_seen_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_title_countries_code_title ON title_countries(country_code, title_id)")
     stale_before = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+    # 僵尸 run 清理：单进程调度下，启动时残留的 running 不可能还活着。
+    # 非 bootstrap（manual/scheduled）直接标 abandoned，避免状态页长期对不上；
+    # bootstrap 保留 6h 宽限，让 sync_if_empty 的 purge+rebuild 逻辑能接管未完成的冷启动。
     cursor.execute("""
         UPDATE sync_runs
         SET status='abandoned', finished_at=?, error=COALESCE(error, 'Stale running sync recovered at startup')
-        WHERE status='running' AND started_at < ?
+        WHERE status='running'
+          AND (reason NOT IN ('empty_database_bootstrap', 'untrusted_rating_rebuild', 'incomplete_bootstrap_rebuild')
+               OR started_at < ?)
     """, (now, stale_before))
     _drop_columns(cursor, "titles", ("tmdb_vote_average", "tmdb_vote_count"))
 

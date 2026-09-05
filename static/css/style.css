@@ -729,6 +729,7 @@ main { width: min(100%, var(--content)); margin: 0 auto; padding: 0 var(--pad) 1
 .related-title { font-size: .76rem; line-height: 1.3; display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .related-rating { font-size: .74rem; opacity: .75; }
 .related-empty, .related-loading { font-size: .82rem; opacity: .7; }
+.freshness-stale { color: #e0a63c; }
 .status-picker { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; padding: 5px; border: 1px solid var(--line); border-radius: 11px; background: rgba(15, 14, 12, .6); }
 .status-picker button {
     min-height: 40px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent;

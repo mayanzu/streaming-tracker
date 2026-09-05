@@ -65,6 +65,12 @@ async def ready(request: Request, response: Response):
 
     if SYNC_ENABLED and not TMDB_API_KEY:
         issues.append("missing_tmdb_api_key")
+    try:
+        from app.imdb_data import dataset_status
+        if dataset_status().get("stale"):
+            issues.append("ratings_dataset_stale")
+    except Exception:
+        issues.append("ratings_dataset_stale")
     if scheduler.get("sync", {}).get("running"):
         issues.append("sync_running")
     if latest_sync and latest_sync.get("status") == "failed":
@@ -200,7 +206,13 @@ def list_providers():
 
 @router.get("/api/stats")
 def stats():
-    return get_stats()
+    result = get_stats()
+    try:
+        from app.imdb_data import dataset_status
+        result["ratings_dataset"] = dataset_status()
+    except Exception:
+        result["ratings_dataset"] = {"exists": False, "mtime": None, "age_hours": None, "stale": True}
+    return result
 
 
 @router.get("/api/sync/status")

@@ -128,6 +128,18 @@ def _trailer_from_details(details):
     return None
 
 
+def _is_recent(title, days=60):
+    """首播 N 天内：可能是 IMDb 还没开分，值得比 missing_rating 更积极地重试。"""
+    release_date = title.get("release_date")
+    if not release_date:
+        return False
+    try:
+        rd = date.fromisoformat(release_date)
+    except ValueError:
+        return False
+    return (date.today() - rd).days <= days
+
+
 def _is_in_grace_period(title):
     """新剧（首播 ≤NEW_TITLE_GRACE_DAYS 天）。"""
     release_date = title.get("release_date")
@@ -244,6 +256,10 @@ async def enrich_titles(candidates, cached_titles=None, progress_callback=None):
                 stats["errors"].append(f"rating imdb_id={imdb_id}: {error}")
             elif _is_in_grace_period(title):
                 qualified.append(title)
+            elif _is_recent(title):
+                title["pending_reason"] = "awaiting_rating"
+                pending.append(title)
+                stats["no_rating"] += 1
             else:
                 title["pending_reason"] = "missing_rating"
                 pending.append(title)

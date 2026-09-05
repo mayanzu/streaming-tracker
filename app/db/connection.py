@@ -4,16 +4,21 @@ import os
 import sqlite3
 from contextlib import contextmanager
 
-from app.config import DATABASE_URL
+from app.config import DATABASE_URL, NEW_TITLE_GRACE_DAYS
 
 TRUSTED_RATING_SOURCES = ("imdb", "omdb")
-TRUSTED_RATING_CONDITION = "imdb_rating IS NOT NULL AND rating_source IN ('imdb', 'omdb')"
+# 可信 = 有 IMDb/OMDb 评分，或无评分但首播在宽限期内（新剧先收录展示，评分回填后走正常路径）。
+# 注意：release_date 为空/非法时 date() 得 NULL，比较为假，不会误放行。
+_GRACE_DAYS = max(int(NEW_TITLE_GRACE_DAYS), 0)
+TRUSTED_RATING_CONDITION = (
+    "(imdb_rating IS NOT NULL AND rating_source IN ('imdb', 'omdb')"
+    f" OR (imdb_rating IS NULL AND date(release_date) >= date('now', '-{_GRACE_DAYS} days')))"
+)
 TRUSTED_RATING_CONDITION_T = (
-    "t.imdb_rating IS NOT NULL AND t.rating_source IN ('imdb', 'omdb')"
+    "(t.imdb_rating IS NOT NULL AND t.rating_source IN ('imdb', 'omdb')"
+    f" OR (t.imdb_rating IS NULL AND date(t.release_date) >= date('now', '-{_GRACE_DAYS} days')))"
 )
-UNTRUSTED_RATING_CONDITION = (
-    "imdb_rating IS NULL OR rating_source IS NULL OR rating_source NOT IN ('imdb', 'omdb')"
-)
+UNTRUSTED_RATING_CONDITION = f"NOT ({TRUSTED_RATING_CONDITION})"
 
 
 def get_db_connection():

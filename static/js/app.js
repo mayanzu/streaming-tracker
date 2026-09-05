@@ -600,6 +600,23 @@ async function loadStats() {
         animateNumber(document.querySelector('[data-stat="list"]'), listTotal);
         const footerTotal = document.getElementById('footer-total');
         if (footerTotal) footerTotal.textContent = Number(statsData.total || 0).toLocaleString();
+        const freshness = document.getElementById('footer-freshness');
+        if (freshness) {
+            const parts = [];
+            if (statsData.last_synced_at) {
+                const d = new Date(statsData.last_synced_at);
+                parts.push(`数据更新于 ${formatRelativeDate(d)}`);
+            }
+            const ds = statsData.ratings_dataset || {};
+            if (ds.stale) {
+                parts.push(`评分库${ds.age_hours != null ? `${Math.round(ds.age_hours / 24)}天前` : '缺失'} · 可能漏掉新开分作品`);
+                freshness.className = 'freshness-stale';
+            } else if (ds.age_hours != null) {
+                parts.push('评分库新鲜');
+                freshness.className = '';
+            }
+            freshness.textContent = parts.length ? `（${parts.join('，')}）` : '';
+        }
         document.getElementById('status-count-all').textContent = Number(statsData.total || 0).toLocaleString();
         ['watchlist', 'watching', 'watched'].forEach(status => {
             document.getElementById(`status-count-${status}`).textContent = Number(byStatus[status] || 0).toLocaleString();

@@ -19,9 +19,28 @@ DATASET_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz"
 CACHE_DIR = DATA_DIR
 CACHE_FILE = CACHE_DIR / "title.ratings.tsv"
 CACHE_MAX_AGE_HOURS = 24
+# 超过此时长即视为过期，需要在 /ready 与前端同步区告警（曾出现过期一个月无人知晓）。
+STALE_ALERT_AGE_HOURS = 48
 DOWNLOAD_RETRIES = 3
 DOWNLOAD_RETRY_DELAY = 5
 _lock = threading.RLock()
+
+
+def dataset_status():
+    """评分库新鲜度：供 /api/stats 与 /ready 消费。永不抛异常。"""
+    try:
+        if not CACHE_FILE.exists() or CACHE_FILE.stat().st_size == 0:
+            return {"exists": False, "mtime": None, "age_hours": None, "stale": True}
+        mtime = datetime.fromtimestamp(CACHE_FILE.stat().st_mtime)
+        age_hours = (datetime.now() - mtime).total_seconds() / 3600
+        return {
+            "exists": True,
+            "mtime": mtime.isoformat(),
+            "age_hours": round(age_hours, 1),
+            "stale": age_hours > STALE_ALERT_AGE_HOURS,
+        }
+    except Exception:
+        return {"exists": False, "mtime": None, "age_hours": None, "stale": True}
 
 
 def _cache_valid():

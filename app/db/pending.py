@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from app.config import PROVIDER_STALE_DAYS
 from app.db.connection import get_db_connection
 from app.db.titles import insert_title
-from app.db.utils import _retry_delay_days, _utc_now
+from app.db.utils import ARCHIVE_RETRY_DAYS, _retry_delay_days, _utc_now
 
 
 def get_due_pending_titles(limit=500):
@@ -48,9 +48,10 @@ def _write_pending(cursor, title_data, observed_at):
     existing = cursor.fetchone()
     attempt_count = (existing["attempt_count"] if existing else 0) + 1
     reason = title_data.get("pending_reason") or "missing_rating"
-    next_retry = datetime.now(timezone.utc) + timedelta(
-        days=_retry_delay_days(reason, attempt_count)
-    )
+    delay_days = _retry_delay_days(reason, attempt_count)
+    if delay_days is None:
+        delay_days = ARCHIVE_RETRY_DAYS
+    next_retry = datetime.now(timezone.utc) + timedelta(days=delay_days)
     payload = dict(title_data)
     payload.pop("last_error", None)
     cursor.execute("""
