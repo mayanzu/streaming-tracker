@@ -1,9 +1,21 @@
 FROM python:3.12-slim
 
+# 构建期 pip 源可覆盖（国内网络默认 pypi.org 经常被劫持/限速）：
+#   docker buildx build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple .
+# 为空则回退官方源；TRUSTED_HOST 仅在自签 MITM 环境下使用。
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_TRUSTED_HOST=
+
 WORKDIR /app
 
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    INDEX="${PIP_INDEX_URL:-https://pypi.org/simple}" \
+    && if [ -n "$PIP_TRUSTED_HOST" ]; then \
+         pip install --index-url "$INDEX" --trusted-host "$PIP_TRUSTED_HOST" -r requirements.txt; \
+       else \
+         pip install --index-url "$INDEX" -r requirements.txt; \
+       fi
 
 COPY . .
 
