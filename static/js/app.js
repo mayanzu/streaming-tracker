@@ -1070,6 +1070,13 @@ async function surprisePick() {
     }
 }
 
+function parseJsonList(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; }
+    catch (_) { return []; }
+}
+
 function renderDetail(title) {
     const rating = Number(title.imdb_rating) || 0;
     const tier = ratingTier(rating);
@@ -1086,7 +1093,16 @@ function renderDetail(title) {
     const status = title.watch_status || '';
     const imdbLink = title.imdb_id ? `<a class="modal-link" href="https://www.imdb.com/title/${encodeURIComponent(title.imdb_id)}/" target="_blank" rel="noopener noreferrer">在 IMDb 查看 ${externalIcon()}</a>` : '';
     const tmdbType = title.type === 'movie' ? 'movie' : 'tv';
+    const watchLink = `<a class="modal-link" href="https://www.themoviedb.org/${tmdbType}/${encodeURIComponent(title.tmdb_id)}/watch" target="_blank" rel="noopener noreferrer">去哪看（TMDB 观看指南） ${externalIcon()}</a>`;
     const region = primaryRegionLabel(title.origin_countries, true);
+    const cast = parseJsonList(title.cast_json).slice(0, 8);
+    const genres = parseJsonList(title.genres_json);
+    const metaExtra = [
+        title.director ? `<span class="meta-tag">导演 ${escapeHtml(title.director)}</span>` : '',
+        title.runtime ? `<span class="meta-tag">${title.type === 'movie' ? '' : '单集约 '}${Number(title.runtime)} 分钟</span>` : '',
+        title.seasons ? `<span class="meta-tag">${Number(title.seasons)} 季${title.episodes ? ` · ${Number(title.episodes)} 集` : ''}</span>` : '',
+    ].join('');
+    const trailer = title.trailer_key ? `<a class="modal-link" href="https://www.youtube.com/watch?v=${encodeURIComponent(title.trailer_key)}" target="_blank" rel="noopener noreferrer">观看预告片 ${externalIcon()}</a>` : '';
     document.getElementById('detail-content').innerHTML = `
         <div class="modal-hero">
             <div class="modal-hero-bg" ${heroBgStyle}></div>
@@ -1116,7 +1132,10 @@ function renderDetail(title) {
                     ${region ? `<span class="meta-tag">${escapeHtml(region)}</span>` : ''}
                     <span class="meta-tag">${escapeHtml(title.release_date || '日期待定')}</span>
                     <span class="meta-tag">${Number(title.rating_votes || 0).toLocaleString()} 票</span>
+                    ${metaExtra}
                 </div>
+                ${cast.length ? `<div class="modal-cast">主演：${cast.map(name => escapeHtml(name)).join(' / ')}</div>` : ''}
+                ${genres.length ? `<div class="modal-genres">${genres.map(g => `<span class="genre-tag">${escapeHtml(g)}</span>`).join('')}</div>` : ''}
                 <div class="modal-section-title">我的片单</div>
                 <div class="status-picker" data-title-id="${title.id}">
                     ${[['', '未加入'], ['watchlist', '想看'], ['watching', '在看'], ['watched', '已看']].map(([value, label]) => `<button type="button" data-set-status="${value}" class="${status === value ? 'active' : ''}">${label}</button>`).join('')}
@@ -1125,8 +1144,10 @@ function renderDetail(title) {
             </div>
             <div class="modal-details">
                 <div class="modal-section-title">剧情简介</div>
-                <p class="modal-overview">${escapeHtml(title.overview || '暂无剧情简介')}</p>
-                <div class="modal-links">${imdbLink}<a class="modal-link" href="https://www.themoviedb.org/${tmdbType}/${encodeURIComponent(title.tmdb_id)}" target="_blank" rel="noopener noreferrer">在 TMDB 查看 ${externalIcon()}</a></div>
+                <div class="modal-overview">${escapeHtml(title.overview || '暂无剧情简介')}</div>
+                <div class="modal-links">${imdbLink}<a class="modal-link" href="https://www.themoviedb.org/${tmdbType}/${encodeURIComponent(title.tmdb_id)}" target="_blank" rel="noopener noreferrer">在 TMDB 查看 ${externalIcon()}</a>${watchLink}${trailer}</div>
+                <div class="modal-section-title">同类推荐</div>
+                <div class="related-row" id="related-row"><span class="related-loading">正在加载推荐…</span></div>
             </div>
         </div>`;
     const ringValue = document.querySelector('#detail-content .ring-val');
@@ -1138,23 +1159,71 @@ function renderDetail(title) {
         }));
     }
     recordRecentView(title); // 详情渲染即计入最近浏览
+    loadRelated(title.id);
+}
+
+async function loadRelated(id) {
+    const row = document.getElementById('related-row');
+    if (!row) return;
+    try {
+        const data = await api(`/api/titles/${encodeURIComponent(id)}/related?limit=12`);
+        const items = data.titles || [];
+        if (!items.length) { row.innerHTML = '<span class="related-empty">暂无同类推荐</span>'; return; }
+        row.innerHTML = items.map(item => `
+            <button type="button" class="related-chip" data-related-id="${item.id}" aria-label="查看 ${escapeHtml(item.title)}">
+                ${sanitizeUrl(item.poster_url) ? `<img src="${escapeHtml(sanitizeUrl(item.poster_url))}" alt="" loading="lazy" decoding="async" width="90" height="135">` : ''}
+                <span class="related-title">${escapeHtml(item.title)}</span>
+                <span class="related-rating">${item.imdb_rating ? Number(item.imdb_rating).toFixed(1) : '—'}</span>
+            </button>`).join('');
+        row.querySelectorAll('[data-related-id]').forEach(btn => {
+            btn.addEventListener('click', () => showDetail(btn.getAttribute('data-related-id')));
+        });
+    } catch (_) {
+        row.innerHTML = '<span class="related-empty">推荐加载失败</span>';
+    }
+}
+
+async function exportWatchlist() {
+    try {
+        const data = await api('/api/watchlist/export');
+        const blob = new Blob([JSON.stringify({ exported_at: new Date().toISOString(), count: data.count, items: data.items }, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `streaming-watchlist-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        showToast(`已导出 ${data.count} 部片单`);
+    } catch (error) {
+        showToast(userMessage(error), 'error');
+    }
 }
 
 function externalIcon() {
     return '<svg viewBox="0 0 24 24" fill="none"><path d="M14 5h5v5M19 5l-8 8M17 13v5H6V7h5"/></svg>';
 }
 
-/* ── 最近浏览：sessionStorage 持久化，跨刷新保留，上限 8 条 ── */
-const RECENT_MAX = 8;
+/* ── 最近浏览：localStorage 持久化，跨会话保留，上限 20 条 ── */
+const RECENT_MAX = 20;
+const RECENT_KEY = 'recent_viewed_v2';
 
 function getRecentViewed() {
-    try { return JSON.parse(sessionStorage.getItem('recent_viewed') || '[]'); }
+    try {
+        const raw = localStorage.getItem(RECENT_KEY) || sessionStorage.getItem('recent_viewed') || '[]';
+        const list = JSON.parse(raw);
+        return Array.isArray(list) ? list : [];
+    }
     catch (_) { return []; } // 数据损坏时视为空
 }
 
 function setRecentViewed(list) {
-    try { sessionStorage.setItem('recent_viewed', JSON.stringify(list)); }
-    catch (_) { /* 隐私模式等场景静默失败 */ }
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); }
+    catch (_) {
+        try { sessionStorage.setItem('recent_viewed', JSON.stringify(list)); }
+        catch (_) { /* 隐私模式等场景静默失败 */ }
+    }
 }
 
 /* 记录浏览：同 id 去重后置顶，截断上限 */
@@ -1598,6 +1667,7 @@ function setupEvents() {
     });
 
     document.getElementById('sync-button').addEventListener('click', triggerSync);
+    document.getElementById('export-button')?.addEventListener('click', exportWatchlist);
     document.getElementById('close-modal').addEventListener('click', closeModal);
     document.getElementById('surprise-btn')?.addEventListener('click', surprisePick);
     document.getElementById('nav-prev')?.addEventListener('click', () => navigateDetail(-1));

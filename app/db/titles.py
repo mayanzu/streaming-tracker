@@ -72,7 +72,14 @@ def insert_title(title_data, conn=None):
                     rating_source=?, rating_votes=?,
                     first_seen_at=COALESCE(first_seen_at, added_date, created_at, ?),
                     last_seen_at=?, last_synced_at=?,
-                    countries_synced_at=COALESCE(?, countries_synced_at)
+                    countries_synced_at=COALESCE(?, countries_synced_at),
+                    director=COALESCE(NULLIF(?, ''), director),
+                    cast_json=COALESCE(?, cast_json),
+                    genres_json=COALESCE(?, genres_json),
+                    runtime=COALESCE(?, runtime),
+                    seasons=COALESCE(?, seasons),
+                    episodes=COALESCE(?, episodes),
+                    trailer_key=COALESCE(?, trailer_key)
                 WHERE tmdb_id=? AND type=?
             """, (
                 title_data.get("imdb_id"),
@@ -84,6 +91,13 @@ def insert_title(title_data, conn=None):
                 title_data.get("last_seen_at") or _utc_now(),
                 title_data.get("last_synced_at") or _utc_now(),
                 countries_synced_at,
+                title_data.get("director"),
+                title_data.get("cast_json"),
+                title_data.get("genres_json"),
+                title_data.get("runtime"),
+                title_data.get("seasons"),
+                title_data.get("episodes"),
+                title_data.get("trailer_key"),
                 title_data["tmdb_id"], title_data["type"],
             ))
             title_id = existing["id"]
@@ -92,8 +106,9 @@ def insert_title(title_data, conn=None):
                 INSERT INTO titles
                 (tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                  poster_url, imdb_rating, rating_source, rating_votes, added_date,
-                 first_seen_at, last_seen_at, last_synced_at, countries_synced_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 first_seen_at, last_seen_at, last_synced_at, countries_synced_at,
+                 director, cast_json, genres_json, runtime, seasons, episodes, trailer_key)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 title_data["tmdb_id"], title_data.get("imdb_id"), title_data["title"],
                 title_data.get("original_title"), title_data["type"],
@@ -104,6 +119,13 @@ def insert_title(title_data, conn=None):
                 title_data.get("last_seen_at") or _utc_now(),
                 title_data.get("last_synced_at") or _utc_now(),
                 countries_synced_at,
+                title_data.get("director"),
+                title_data.get("cast_json"),
+                title_data.get("genres_json"),
+                title_data.get("runtime"),
+                title_data.get("seasons"),
+                title_data.get("episodes"),
+                title_data.get("trailer_key"),
             ))
             title_id = cursor.lastrowid
 

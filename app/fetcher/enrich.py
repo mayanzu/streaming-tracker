@@ -1,6 +1,7 @@
 """作品富化：详情抓取、评分合并、缓存判断与整体编排（discover → enrich → 结果）。"""
 
 import asyncio
+import json
 from datetime import date, datetime, timezone
 
 import httpx
@@ -41,7 +42,7 @@ async def _fetch_details(candidate, client):
         details = await fetch_tmdb(
             endpoint,
             {
-                "append_to_response": "external_ids,images,watch/providers",
+                "append_to_response": "external_ids,images,watch/providers,credits,videos",
                 "include_image_language": "zh,null,en",
             },
             client=client,
@@ -74,6 +75,10 @@ async def _fetch_details(candidate, client):
                     (regions.get(provider) or []) + values
                 ))
         title["origin_countries"] = _origin_countries_from_details(details)
+        title["director"], title["cast_json"] = _credits_from_details(details)
+        title["genres_json"] = _genres_from_details(details)
+        title["runtime"], title["seasons"], title["episodes"] = _runtime_from_details(details, title["type"])
+        title["trailer_key"] = _trailer_from_details(details)
         if not title["overview"]:
             english = await fetch_tmdb(endpoint, {"language": "en-US"}, client=client)
             if english.get("overview"):
@@ -85,6 +90,42 @@ async def _fetch_details(candidate, client):
     except Exception as exc:
         title["enrichment_error"] = f"{type(exc).__name__}: {exc}"
         return title
+
+
+def _credits_from_details(details):
+    """返回 (director, cast_json)：导演取 credits.crew 中 job 为 Director 的第一人，演员取 cast 前8名。"""
+    credits = details.get("credits") or {}
+    director = ""
+    for person in credits.get("crew") or []:
+        if str(person.get("job") or "").lower() == "director":
+            director = person.get("name") or ""
+            break
+    cast = [p.get("name") for p in (credits.get("cast") or []) if p.get("name")][:8]
+    return director, json.dumps(cast, ensure_ascii=False)
+
+
+def _genres_from_details(details):
+    genres = [g.get("name") for g in (details.get("genres") or []) if g.get("name")]
+    return json.dumps(genres, ensure_ascii=False)
+
+
+def _runtime_from_details(details, media_type):
+    runtime, seasons, episodes = None, None, None
+    if media_type == "movie":
+        runtime = details.get("runtime") or None
+    else:
+        runtimes = details.get("episode_run_time") or []
+        runtime = runtimes[0] if runtimes else None
+        seasons = details.get("number_of_seasons") or None
+        episodes = details.get("number_of_episodes") or None
+    return runtime, seasons, episodes
+
+
+def _trailer_from_details(details):
+    for video in (details.get("videos") or {}).get("results") or []:
+        if video.get("type") == "Trailer" and video.get("site") == "YouTube" and video.get("key"):
+            return video["key"]
+    return None
 
 
 def _is_in_grace_period(title):

@@ -103,10 +103,11 @@ app.include_router(router)
 
 # 静态文件：带版本号(?v=) → immutable 一年缓存；其余 → no-cache
 # 自定义路由而非 mount，确保 GZip 中间件与缓存头都生效
-_STATIC_ALLOWED = {".css", ".js", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".ico", ".woff", ".woff2"}
+_STATIC_ALLOWED = {".css", ".js", ".json", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".ico", ".woff", ".woff2"}
 _STATIC_MIME = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".jpg": "image/jpeg",

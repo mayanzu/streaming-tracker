@@ -8,9 +8,10 @@
     <title>片流 · 高分流媒体片单</title>
     <link rel="preconnect" href="https://image.tmdb.org" crossorigin>
     <link rel="dns-prefetch" href="https://image.tmdb.org">
-    <link rel="preload" as="style" href="/static/css/style.css?v=36">
-    <link rel="preload" as="script" href="/static/js/app.js?v=38">
-    <link rel="stylesheet" href="/static/css/style.css?v=36">
+    <link rel="preload" as="style" href="/static/css/style.css?v=37">
+    <link rel="preload" as="script" href="/static/js/app.js?v=39">
+    <link rel="stylesheet" href="/static/css/style.css?v=37">
+    <link rel="manifest" href="/static/manifest.json">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -33,7 +34,7 @@
                     <span class="search-icon" aria-hidden="true">
                         <svg viewBox="0 0 20 20" fill="none"><circle cx="9" cy="9" r="5.5"/><path d="m13.5 13.5 3.5 3.5"/></svg>
                     </span>
-                    <input id="search-input" type="search" placeholder="搜索片名、导演、演员…" autocomplete="off" aria-label="搜索作品">
+                    <input id="search-input" type="search" placeholder="搜索片名、原名、简介、导演、演员…" autocomplete="off" aria-label="搜索作品">
                     <button id="clear-search" class="clear-search hidden" type="button" aria-label="清除搜索">
                         <svg viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10M17 7 7 17"/></svg>
                     </button>
@@ -49,6 +50,10 @@
                 <button id="sync-button" class="sync-button hidden" type="button">
                     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.8-2L20 9M4 15l2.1 2a7 7 0 0 0 11.8-2"/></svg>
                     <span>同步数据</span>
+                </button>
+                <button id="export-button" class="sync-button" type="button" title="导出我的片单为 JSON 备份">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M12 4v11M7.5 11 12 15.5 16.5 11M5 19h14"/></svg>
+                    <span>导出片单</span>
                 </button>
             </div>
         </div>
@@ -222,6 +227,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=38" defer></script>
+    <script src="/static/js/app.js?v=39" defer></script>
 </body>
 </html>

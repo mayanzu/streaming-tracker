@@ -8,7 +8,10 @@ from pydantic import BaseModel, Field
 from app.db import (
     check_database,
     count_titles,
+    export_watchlist,
     get_providers,
+    get_recent_releases,
+    get_related_titles,
     get_stats,
     get_title_detail,
     get_titles,
@@ -111,7 +114,7 @@ def list_titles(
     sort_by: str = Query("release_date", pattern="^(rating|release_date)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     title_type: str = Query(None, alias="type", pattern="^(movie|tv)?$"),
-    search: str = Query(None),
+    search: str = Query(None, max_length=100),
     region: str = Query(None, pattern="^[A-Za-z]{2}$"),
     min_rating: float = Query(None, ge=0, le=10),
     watch_status: str = Query(None, pattern="^(watchlist|watching|watched)?$"),
@@ -153,6 +156,23 @@ def get_title(title_id: int):
     if not title:
         raise HTTPException(status_code=404, detail="作品未找到")
     return title
+
+
+@router.get("/api/titles/{title_id}/related")
+def get_related(title_id: int, limit: int = Query(12, ge=1, le=24)):
+    return {"titles": get_related_titles(title_id, limit=limit)}
+
+
+@router.get("/api/watchlist/export")
+def export_list():
+    items = export_watchlist()
+    return {"count": len(items), "items": items}
+
+
+@router.get("/api/releases")
+def recent_releases(days: int = Query(14, ge=1, le=90), limit: int = Query(50, ge=1, le=100)):
+    titles = get_recent_releases(days=days, limit=limit)
+    return {"days": days, "total": len(titles), "titles": titles}
 
 
 @router.patch("/api/titles/{title_id}/status")

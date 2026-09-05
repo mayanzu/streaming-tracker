@@ -102,8 +102,9 @@ def _build_title_filters(provider=None, title_type=None, search=None, region=Non
         filters.append("t.type = ?")
         params.append(title_type)
     if search:
-        filters.append("(t.title LIKE ? OR t.original_title LIKE ?)")
-        params.extend([f"%{search}%", f"%{search}%"])
+        filters.append("(t.title LIKE ? OR t.original_title LIKE ? OR t.overview LIKE ? OR t.director LIKE ? OR t.cast_json LIKE ?)")
+        like = f"%{search}%"
+        params.extend([like, like, like, like, like])
     if region:
         filters.append("""
             EXISTS (
@@ -407,5 +408,82 @@ def get_titles_missing_countries(limit=0):
             params.append(limit)
         cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_related_titles(title_id, limit=12):
+    """同类型+共享平台的相关推荐，按评分排序。 genres/cast 存 JSON 不便 SQL join，先用平台交集保证可看性。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT t.type FROM titles t
+            WHERE t.id = ? AND {TRUSTED_RATING_CONDITION_T}
+        """, (title_id,))
+        base = cursor.fetchone()
+        if not base:
+            return []
+        cursor.execute(f"""
+            SELECT t.*, COALESCE(p.watch_status, '') AS watch_status
+            FROM titles t
+            LEFT JOIN title_preferences p ON t.tmdb_id = p.tmdb_id AND t.type = p.type
+            WHERE t.id != ?
+              AND t.type = ?
+              AND {TRUSTED_RATING_CONDITION_T}
+              AND EXISTS (
+                SELECT 1 FROM title_provider_availability a
+                JOIN title_provider_availability b ON a.provider_name = b.provider_name
+                WHERE a.title_id = ? AND b.title_id = t.id
+                  AND a.is_active = 1 AND b.is_active = 1
+              )
+            ORDER BY t.imdb_rating DESC NULLS LAST, t.release_date DESC
+            LIMIT ?
+        """, (title_id, base["type"], title_id, limit))
+        titles = [dict(row) for row in cursor.fetchall()]
+        provider_map = _fetch_provider_map(cursor, [t["id"] for t in titles])
+        for title in titles:
+            title["providers"] = provider_map.get(title["id"], [])
+        return titles
+    finally:
+        conn.close()
+
+
+def export_watchlist():
+    """导出全部片单偏好（含作品快照），用于备份/迁移。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT p.tmdb_id, p.type, p.watch_status, p.updated_at,
+                   t.title, t.original_title, t.imdb_id, t.imdb_rating, t.poster_url
+            FROM title_preferences p
+            LEFT JOIN titles t ON t.tmdb_id = p.tmdb_id AND t.type = p.type
+            ORDER BY p.updated_at DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_recent_releases(days=14, limit=50):
+    """近 N 天上映/首播的高分作品，用于新片提醒/RSS。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT t.*, COALESCE(p.watch_status, '') AS watch_status
+            FROM titles t
+            LEFT JOIN title_preferences p ON t.tmdb_id = p.tmdb_id AND t.type = p.type
+            WHERE {TRUSTED_RATING_CONDITION_T}
+              AND date(t.release_date) >= date('now', ?)
+            ORDER BY t.release_date DESC, t.imdb_rating DESC
+            LIMIT ?
+        """, (f"-{int(days)} days", int(limit)))
+        titles = [dict(row) for row in cursor.fetchall()]
+        provider_map = _fetch_provider_map(cursor, [t["id"] for t in titles])
+        for title in titles:
+            title["providers"] = provider_map.get(title["id"], [])
+        return titles
     finally:
         conn.close()

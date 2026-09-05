@@ -49,6 +49,13 @@ def init_db():
             "first_seen_at": "TEXT",
             "last_seen_at": "TEXT",
             "countries_synced_at": "TEXT",
+            "director": "TEXT",
+            "cast_json": "TEXT",
+            "genres_json": "TEXT",
+            "runtime": "INTEGER",
+            "seasons": "INTEGER",
+            "episodes": "INTEGER",
+            "trailer_key": "TEXT",
         },
     )
 
@@ -268,6 +275,13 @@ def _ensure_title_identity_schema(conn, cursor):
                 last_seen_at TEXT,
                 last_synced_at TEXT,
                 countries_synced_at TEXT,
+                director TEXT,
+                cast_json TEXT,
+                genres_json TEXT,
+                runtime INTEGER,
+                seasons INTEGER,
+                episodes INTEGER,
+                trailer_key TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(tmdb_id, type)
             )
@@ -276,12 +290,14 @@ def _ensure_title_identity_schema(conn, cursor):
             INSERT INTO titles (
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
-                first_seen_at, last_seen_at, last_synced_at, countries_synced_at, created_at
+                first_seen_at, last_seen_at, last_synced_at, countries_synced_at,
+                director, cast_json, genres_json, runtime, seasons, episodes, trailer_key, created_at
             )
             SELECT
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
-                first_seen_at, last_seen_at, last_synced_at, countries_synced_at, created_at
+                first_seen_at, last_seen_at, last_synced_at, countries_synced_at,
+                director, cast_json, genres_json, runtime, seasons, episodes, trailer_key, created_at
             FROM titles_old
         """)
         cursor.execute("""
