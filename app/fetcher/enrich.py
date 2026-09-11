@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import httpx
 
@@ -10,15 +10,16 @@ from app.config import (
     ENRICH_BATCH_SIZE,
     ENRICH_CONCURRENCY,
     MIN_IMDB_RATING,
-    MIN_IMDB_VOTES,
-    MIN_IMDB_VOTES_GRACE,
-    NEW_TITLE_GRACE_DAYS,
     TMDB_API_KEY,
 )
 from app.fetcher.common import (
     _cached_title,
+    _contains_cjk,
     _is_fresh,
+    _is_in_grace_period,
+    _is_recent,
     _localized_poster_path,
+    _min_votes_for,
     _notify_progress,
     _origin_countries_from_details,
     _poster_url,
@@ -79,10 +80,16 @@ async def _fetch_details(candidate, client):
         title["genres_json"] = _genres_from_details(details)
         title["runtime"], title["seasons"], title["episodes"] = _runtime_from_details(details, title["type"])
         title["trailer_key"] = _trailer_from_details(details)
-        if not title["overview"]:
-            english = await fetch_tmdb(endpoint, {"language": "en-US"}, client=client)
-            if english.get("overview"):
-                title["overview"] = await translate_to_chinese(english["overview"])
+        if not _contains_cjk(title["overview"]):
+            # TMDB 无中文译文时会回退原文；这里对原文做机翻兜底，保证展示中文简介。
+            if not title["overview"]:
+                english = await fetch_tmdb(endpoint, {"language": "en-US"}, client=client)
+                title["overview"] = english.get("overview") or ""
+            if title["overview"]:
+                title["overview"] = await translate_to_chinese(title["overview"])
+        if not _contains_cjk(title["title"]) and not _contains_cjk(title["original_title"]):
+            # 标题同理：原生中文作品（original_title 含 CJK）不翻译，避免中文名被二次翻译。
+            title["title"] = await translate_to_chinese(title["title"])
         synced_at = datetime.now(timezone.utc).isoformat()
         title["last_synced_at"] = synced_at
         title["countries_synced_at"] = synced_at
@@ -126,35 +133,6 @@ def _trailer_from_details(details):
         if video.get("type") == "Trailer" and video.get("site") == "YouTube" and video.get("key"):
             return video["key"]
     return None
-
-
-def _is_recent(title, days=60):
-    """首播 N 天内：可能是 IMDb 还没开分，值得比 missing_rating 更积极地重试。"""
-    release_date = title.get("release_date")
-    if not release_date:
-        return False
-    try:
-        rd = date.fromisoformat(release_date)
-    except ValueError:
-        return False
-    return (date.today() - rd).days <= days
-
-
-def _is_in_grace_period(title):
-    """新剧（首播 ≤NEW_TITLE_GRACE_DAYS 天）。"""
-    release_date = title.get("release_date")
-    if not release_date:
-        return False
-    try:
-        rd = date.fromisoformat(release_date)
-    except ValueError:
-        return False
-    return (date.today() - rd).days <= NEW_TITLE_GRACE_DAYS
-
-
-def _min_votes_for(title):
-    """对新剧（首播 ≤NEW_TITLE_GRACE_DAYS 天）放宽 votes 门槛。"""
-    return MIN_IMDB_VOTES_GRACE if _is_in_grace_period(title) else MIN_IMDB_VOTES
 
 
 async def enrich_titles(candidates, cached_titles=None, progress_callback=None):

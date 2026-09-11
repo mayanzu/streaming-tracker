@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 
 import httpx
 
@@ -10,6 +10,8 @@ from app.config import (
     ALL_PROVIDER_WATCH_REGIONS,
     DEFAULT_PROVIDER_REGIONS,
     DISCOVER_CONCURRENCY,
+    DISCOVER_MIN_VOTE_COUNT,
+    NEW_TITLE_GRACE_DAYS,
     PROVIDER_REGIONS,
     PROVIDERS,
     TMDB_API_KEY,
@@ -35,6 +37,13 @@ async def _discover_range(
             f"{date_field}.lte": range_end.isoformat(),
             "page": page,
         }
+        if (
+            DISCOVER_MIN_VOTE_COUNT > 0
+            and range_end < date.today() - timedelta(days=NEW_TITLE_GRACE_DAYS)
+        ):
+            # 历史窗口只保留有热度的目录，冷门/无评分作品不再全量拉取；
+            # 近期窗口不加票数门槛，避免漏掉刚上线、票数还不高的新片。
+            params["vote_count.gte"] = DISCOVER_MIN_VOTE_COUNT
         async with semaphore:
             return await fetch_tmdb(f"/discover/{media_type}", params, client=client)
 

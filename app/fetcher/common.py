@@ -10,13 +10,28 @@ from functools import lru_cache
 
 from deep_translator import GoogleTranslator
 
-from app.config import DETAIL_REFRESH_DAYS, MIN_IMDB_RATING, PROVIDERS
+from app.config import (
+    ASIAN_MIN_IMDB_VOTES,
+    ASIAN_ORIGIN_COUNTRIES,
+    DETAIL_REFRESH_DAYS,
+    MIN_IMDB_RATING,
+    MIN_IMDB_VOTES,
+    MIN_IMDB_VOTES_GRACE,
+    NEW_TITLE_GRACE_DAYS,
+    PROVIDERS,
+    WATCH_MONETIZATION_TYPES,
+)
 
 logger = logging.getLogger(__name__)
 TRUSTED_RATING_SOURCES = {"imdb", "omdb"}
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 IMDB_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9])(tt\d{7,12})(?!\d)", re.IGNORECASE)
+CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 WATCH_PROVIDER_FIELDS = ("flatrate", "ads", "free", "rent", "buy")
+# 只把配置中的可看渠道计入平台可用性；默认 flatrate，避免 rent/buy 把"可租可买"算成"流媒体可看"
+MONETIZATION_FIELDS = tuple(
+    field for field in WATCH_MONETIZATION_TYPES.split("|") if field in WATCH_PROVIDER_FIELDS
+) or WATCH_PROVIDER_FIELDS
 PRIMARY_PROVIDER_ALIASES = {
     "netflix": "netflix",
     "disney plus": "disney",
@@ -46,13 +61,63 @@ def normalize_imdb_id(value):
     return match.group(1).lower()
 
 
+def _contains_cjk(text):
+    """判断文本是否含中文字符；TMDB 无中文译文时字段会回退原文，需要据此兜底。"""
+    return bool(CJK_PATTERN.search(str(text or "")))
+
+
+def _release_days_since(release_date):
+    """距上映/首播的天数；未来日期为负，空值或非法日期返回 None。"""
+    if not release_date:
+        return None
+    try:
+        return (date.today() - date.fromisoformat(str(release_date)[:10])).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_in_grace_period(title, days=NEW_TITLE_GRACE_DAYS):
+    """新剧（已上映且首播 ≤days 天）；未来上映日期不算宽限期。"""
+    elapsed = _release_days_since((title or {}).get("release_date"))
+    return elapsed is not None and 0 <= elapsed <= days
+
+
+def _is_recent(title, days=60):
+    """首播 N 天内：可能是 IMDb 还没开分，值得比 missing_rating 更积极地重试。"""
+    elapsed = _release_days_since((title or {}).get("release_date"))
+    return elapsed is not None and 0 <= elapsed <= days
+
+
+def _min_votes_for(title):
+    """votes 门槛：新剧宽限 > 亚洲产地放宽 > 默认。"""
+    if _is_in_grace_period(title):
+        return MIN_IMDB_VOTES_GRACE
+    countries = set(_normalize_country_codes((title or {}).get("origin_countries")))
+    if countries & set(ASIAN_ORIGIN_COUNTRIES):
+        return ASIAN_MIN_IMDB_VOTES
+    return MIN_IMDB_VOTES
+
+
+_TRANSLATION_ERROR_PATTERN = re.compile(
+    r"<html|<!doctype|error\s+5\d\d|server error|that['’]s an error"
+    r"|please try again later|we['’]re sorry|unusual traffic",
+    re.IGNORECASE,
+)
+
+
+def _valid_translation(result):
+    """Google 偶发返回错误页正文，不能当译文写库。"""
+    if not result:
+        return False
+    return not _TRANSLATION_ERROR_PATTERN.search(result)
+
+
 @lru_cache(maxsize=5000)
 def _translate_cached(text: str) -> str:
-    try:
-        result = GoogleTranslator(source="en", target="zh-CN").translate(text[:800])
-        return result if result else text
-    except Exception:
-        return text
+    result = GoogleTranslator(source="auto", target="zh-CN").translate(text[:800])
+    if not _valid_translation(result):
+        raise ValueError("translation provider returned an error page")
+    return result
 
 
 def _localized_poster_path(details):
@@ -94,7 +159,11 @@ def _origin_countries_from_details(details):
 async def translate_to_chinese(text):
     if not text:
         return text
-    return await asyncio.to_thread(_translate_cached, text[:800])
+    try:
+        return await asyncio.to_thread(_translate_cached, text[:800])
+    except Exception:
+        # 失败结果不缓存，下次同步/回填会重试
+        return text
 
 
 def _retry_delay(response, attempt):
@@ -178,7 +247,7 @@ def _provider_availability(payload):
     providers = []
     provider_regions = {}
     for region, offers in (payload.get("results") or {}).items():
-        for field in WATCH_PROVIDER_FIELDS:
+        for field in MONETIZATION_FIELDS:
             for offer in offers.get(field) or []:
                 provider_id = offer.get("provider_id")
                 provider_name = provider_by_id.get(provider_id)
@@ -199,6 +268,9 @@ def _is_fresh(cached):
         or cached.get("rating_source") not in TRUSTED_RATING_SOURCES
         or cached.get("imdb_rating") is None
         or float(cached["imdb_rating"]) < MIN_IMDB_RATING
+        or (cached.get("rating_votes") or 0) < _min_votes_for(cached)
+        or not _contains_cjk(cached.get("title"))
+        or not _contains_cjk(cached.get("overview"))
         or not cached.get("countries_synced_at")
     ):
         return False

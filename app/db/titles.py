@@ -5,7 +5,7 @@ from datetime import date
 from app.config import NEW_TITLE_GRACE_DAYS
 from app.db.connection import get_db_connection
 from app.db.queries import _fetch_country_map
-from app.db.utils import _normalize_country_codes, _normalize_rating_source, _utc_now
+from app.db.utils import _has_chinese, _normalize_country_codes, _normalize_rating_source, _utc_now
 
 
 def update_title_imdb_id(title_id, imdb_id):
@@ -36,15 +36,20 @@ def insert_title(title_data, conn=None):
     countries_synced_at = title_data.get("countries_synced_at")
     if countries_supplied and not countries_synced_at:
         countries_synced_at = title_data.get("last_synced_at") or _utc_now()
+    has_zh = None
+    if (title_data.get("title") or "").strip() or (title_data.get("overview") or "").strip():
+        has_zh = _has_chinese(title_data.get("title"), title_data.get("overview"))
     if rating is None:
         release_date = title_data.get("release_date")
         in_grace = False
         if release_date:
             try:
-                if (date.today() - date.fromisoformat(release_date)).days <= NEW_TITLE_GRACE_DAYS:
-                    in_grace = True
+                days_since_release = (date.today() - date.fromisoformat(release_date)).days
             except ValueError:
-                pass
+                days_since_release = None
+            # 只接受已上映且仍在宽限期内的无评分作品；未来上映日期不算宽限期。
+            if days_since_release is not None and 0 <= days_since_release <= NEW_TITLE_GRACE_DAYS:
+                in_grace = True
         if not in_grace:
             if owns_conn:
                 conn.close()
@@ -73,6 +78,7 @@ def insert_title(title_data, conn=None):
                     first_seen_at=COALESCE(first_seen_at, added_date, created_at, ?),
                     last_seen_at=?, last_synced_at=?,
                     countries_synced_at=COALESCE(?, countries_synced_at),
+                    has_zh=COALESCE(?, has_zh),
                     director=COALESCE(NULLIF(?, ''), director),
                     cast_json=COALESCE(?, cast_json),
                     genres_json=COALESCE(?, genres_json),
@@ -91,6 +97,7 @@ def insert_title(title_data, conn=None):
                 title_data.get("last_seen_at") or _utc_now(),
                 title_data.get("last_synced_at") or _utc_now(),
                 countries_synced_at,
+                has_zh,
                 title_data.get("director"),
                 title_data.get("cast_json"),
                 title_data.get("genres_json"),
@@ -107,8 +114,8 @@ def insert_title(title_data, conn=None):
                 (tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                  poster_url, imdb_rating, rating_source, rating_votes, added_date,
                  first_seen_at, last_seen_at, last_synced_at, countries_synced_at,
-                 director, cast_json, genres_json, runtime, seasons, episodes, trailer_key)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 has_zh, director, cast_json, genres_json, runtime, seasons, episodes, trailer_key)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 title_data["tmdb_id"], title_data.get("imdb_id"), title_data["title"],
                 title_data.get("original_title"), title_data["type"],
@@ -119,6 +126,7 @@ def insert_title(title_data, conn=None):
                 title_data.get("last_seen_at") or _utc_now(),
                 title_data.get("last_synced_at") or _utc_now(),
                 countries_synced_at,
+                has_zh,
                 title_data.get("director"),
                 title_data.get("cast_json"),
                 title_data.get("genres_json"),

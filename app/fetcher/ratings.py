@@ -10,6 +10,7 @@ from app.config import (
     HTTP_RETRIES,
     OMDB_API_KEY,
     OMDB_BASE_URL,
+    OMDB_MIN_VOTES,
 )
 from app.fetcher.common import RETRYABLE_STATUS_CODES, ExternalRequestError, _retry_delay
 
@@ -40,7 +41,10 @@ async def fetch_omdb(imdb_id, client=None, retries=HTTP_RETRIES):
                 votes = data.get("imdbVotes", "0")
                 if rating in (None, "N/A"):
                     return None, 0
-                return float(rating), int(votes.replace(",", ""))
+                vote_count = int(str(votes).replace(",", ""))
+                if vote_count < OMDB_MIN_VOTES:
+                    return None, 0
+                return float(rating), vote_count
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 if attempt < retries:
                     await asyncio.sleep(_retry_delay(response, attempt))

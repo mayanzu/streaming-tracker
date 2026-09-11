@@ -68,25 +68,35 @@ PROVIDER_REGIONS = {
 DISCOVER_ALL_PROVIDERS = os.getenv("DISCOVER_ALL_PROVIDERS", "true").lower() in (
     "1", "true", "yes", "on",
 )
+# 全平台补抓只覆盖华语观看地区，避免把日韩美本地小平台的目录整库拉进来
 _all_provider_regions = os.getenv("ALL_PROVIDER_WATCH_REGIONS", "")
 ALL_PROVIDER_WATCH_REGIONS = tuple(
     region.strip().upper()
     for region in _all_provider_regions.split(",")
     if region.strip()
-) or GLOBAL_DISCOVERY_REGIONS
+) or CHINESE_FOCUSED_REGIONS
 
 # 评分和抓取策略
 MIN_IMDB_RATING = float(os.getenv("MIN_IMDB_RATING", "7.0"))
-MIN_IMDB_VOTES = int(os.getenv("MIN_IMDB_VOTES", "50"))
+MIN_IMDB_VOTES = int(os.getenv("MIN_IMDB_VOTES", "1000"))
 OMDB_MIN_VOTES = int(os.getenv("OMDB_MIN_VOTES", "100"))
 # 新剧宽限期：首播 ≤N 天内放宽 votes 门槛，避免新剧因票数不足被 pending
 NEW_TITLE_GRACE_DAYS = int(os.getenv("NEW_TITLE_GRACE_DAYS", "30"))
-MIN_IMDB_VOTES_GRACE = int(os.getenv("MIN_IMDB_VOTES_GRACE", "5"))
+MIN_IMDB_VOTES_GRACE = int(os.getenv("MIN_IMDB_VOTES_GRACE", "20"))
+# 历史窗口（超过宽限期）的平台发现预过滤：TMDB 票数低于该值的冷门目录不再抓取，0 关闭
+DISCOVER_MIN_VOTE_COUNT = int(os.getenv("DISCOVER_MIN_VOTE_COUNT", "100"))
+# 亚洲产地（中/台/港/韩/日/泰/越）内容票数门槛放宽，避免漏掉低票数亚洲剧集；且默认不受"仅其他平台"限制
+_asian_origins = os.getenv("ASIAN_ORIGIN_COUNTRIES", "CN,TW,HK,KR,JP,TH,VN")
+ASIAN_ORIGIN_COUNTRIES = tuple(
+    code.strip().upper() for code in _asian_origins.split(",") if code.strip()
+) or ("CN", "TW", "HK", "KR", "JP", "TH", "VN")
+ASIAN_MIN_IMDB_VOTES = int(os.getenv("ASIAN_MIN_IMDB_VOTES", "100"))
 ENRICH_CONCURRENCY = int(os.getenv("ENRICH_CONCURRENCY", "30"))
 ENRICH_BATCH_SIZE = max(1, int(os.getenv("ENRICH_BATCH_SIZE", "200")))
 DISCOVER_CONCURRENCY = int(os.getenv("DISCOVER_CONCURRENCY", "10"))
+# 只统计真正的可看渠道；默认仅订阅制 flatrate，避免 rent/buy 把"可租可买"的冷门目录算成流媒体
 WATCH_MONETIZATION_TYPES = os.getenv(
-    "WATCH_MONETIZATION_TYPES", "flatrate,ads,free,rent,buy"
+    "WATCH_MONETIZATION_TYPES", "flatrate"
 ).replace(",", "|")
 HTTP_RETRIES = int(os.getenv("HTTP_RETRIES", "3"))
 DETAIL_REFRESH_DAYS = int(os.getenv("DETAIL_REFRESH_DAYS", "7"))
@@ -109,7 +119,8 @@ SYNC_INCREMENTAL_OVERLAP_DAYS = int(os.getenv("SYNC_INCREMENTAL_OVERLAP_DAYS", "
 SYNC_CATALOG_SCAN_ENABLED = os.getenv("SYNC_CATALOG_SCAN_ENABLED", "true").lower() in (
     "1", "true", "yes", "on",
 )
-SYNC_CATALOG_SCAN_DAYS_BACK = int(os.getenv("SYNC_CATALOG_SCAN_DAYS_BACK", "3650"))
+# 历史补偿扫描：默认只回看 1 年，冷门老片不再无限回填
+SYNC_CATALOG_SCAN_DAYS_BACK = int(os.getenv("SYNC_CATALOG_SCAN_DAYS_BACK", "365"))
 SYNC_CATALOG_WINDOW_DAYS = int(os.getenv("SYNC_CATALOG_WINDOW_DAYS", "365"))
 SYNC_BOOTSTRAP_ON_EMPTY = os.getenv("SYNC_BOOTSTRAP_ON_EMPTY", "true").lower() in (
     "1",
@@ -117,5 +128,5 @@ SYNC_BOOTSTRAP_ON_EMPTY = os.getenv("SYNC_BOOTSTRAP_ON_EMPTY", "true").lower() i
     "yes",
     "on",
 )
-SYNC_BOOTSTRAP_DAYS_BACK = int(os.getenv("SYNC_BOOTSTRAP_DAYS_BACK", "1825"))
-SYNC_BOOTSTRAP_MAX_PAGES = int(os.getenv("SYNC_BOOTSTRAP_MAX_PAGES", "29"))
+SYNC_BOOTSTRAP_DAYS_BACK = int(os.getenv("SYNC_BOOTSTRAP_DAYS_BACK", "365"))
+SYNC_BOOTSTRAP_MAX_PAGES = int(os.getenv("SYNC_BOOTSTRAP_MAX_PAGES", "10"))

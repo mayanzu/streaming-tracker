@@ -49,6 +49,7 @@ def init_db():
             "first_seen_at": "TEXT",
             "last_seen_at": "TEXT",
             "countries_synced_at": "TEXT",
+            "has_zh": "INTEGER",
             "director": "TEXT",
             "cast_json": "TEXT",
             "genres_json": "TEXT",
@@ -220,6 +221,7 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_availability_title_active_provider ON title_provider_availability(title_id, is_active, provider_name)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_availability_last_seen ON title_provider_availability(last_seen_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_title_countries_code_title ON title_countries(country_code, title_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_title_countries_title_code ON title_countries(title_id, country_code)")
     stale_before = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
     # 僵尸 run 清理：单进程调度下，启动时残留的 running 不可能还活着。
     # 非 bootstrap（manual/scheduled）直接标 abandoned，避免状态页长期对不上；

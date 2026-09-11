@@ -11,12 +11,12 @@ from app.db import (
     export_watchlist,
     get_providers,
     get_recent_releases,
-    get_related_titles,
     get_stats,
     get_title_detail,
     get_titles,
     update_title_status,
 )
+from app.related import get_related_titles_async
 from app.config import MAIN_FILTER_PROVIDERS, PROVIDERS, SYNC_ENABLED, TMDB_API_KEY
 from app.scheduler import get_scheduler_status
 from app.importer import TitleImportError, import_title_by_imdb
@@ -165,8 +165,8 @@ def get_title(title_id: int):
 
 
 @router.get("/api/titles/{title_id}/related")
-def get_related(title_id: int, limit: int = Query(12, ge=1, le=24)):
-    return {"titles": get_related_titles(title_id, limit=limit)}
+async def get_related(title_id: int, limit: int = Query(12, ge=1, le=24)):
+    return {"titles": await get_related_titles_async(title_id, limit=limit)}
 
 
 @router.get("/api/watchlist/export")

@@ -1,9 +1,17 @@
 """与业务无关的通用工具：时间戳、评分/国家代码归一化、重试间隔。"""
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from app.config import MIN_IMDB_RATING, PENDING_RETRY_DAYS
 from app.db.connection import TRUSTED_RATING_SOURCES
+
+CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def _has_chinese(*texts):
+    """标题/简介任一含中文字符即视为中文就绪（供 has_zh 持久化与读路径过滤）。"""
+    return 1 if any(CJK_PATTERN.search(str(text or "")) for text in texts) else 0
 
 
 def _utc_now():
