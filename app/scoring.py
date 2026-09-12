@@ -17,6 +17,12 @@ def weighted_rating_sql(alias="t", null_fallback=None):
     """
     prefix = f"{alias}." if alias else ""
     null_value = "NULL" if null_fallback is None else str(null_fallback)
+    if RATING_PRIOR_VOTES <= 0:
+        # R4-08：关闭先验票数时退化为原始评分，避免 0/0 在 SQLite 中变成 NULL
+        return (
+            f"CASE WHEN {prefix}imdb_rating IS NULL THEN {null_value}"
+            f" ELSE {prefix}imdb_rating END"
+        )
     votes = f"COALESCE({prefix}rating_votes, 0)"
     return (
         f"CASE WHEN {prefix}imdb_rating IS NULL THEN {null_value} ELSE"

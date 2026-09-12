@@ -123,7 +123,7 @@ def _normalized_genre_values(genre):
 
 def _build_title_filters(title_type=None, search=None, region=None, min_rating=None,
                          genre=None, max_runtime=None,
-                         exclude_watched=None, released_after=None,
+                         exclude_watched=None, released_after=None, released_before=None,
                          year_from=None, year_to=None):
     filters = []
     params = []
@@ -174,6 +174,11 @@ def _build_title_filters(title_type=None, search=None, region=None, min_rating=N
         # length 保护排除空值/异常格式，NULL 比较为假自动排除。
         filters.append("length(t.release_date) = 10 AND t.release_date >= ?")
         params.append(str(released_after))
+    if released_before:
+        # R4-02 近期窗口上界：与 released_after 成对传入时排除未来上映日期；
+        # released_after 单独使用仍保留“未来作品可查”的通用语义。
+        filters.append("length(t.release_date) = 10 AND t.release_date <= ?")
+        params.append(str(released_before))
     if year_from is not None:
         filters.append("length(t.release_date) = 10 AND t.release_date >= ?")
         params.append(f"{int(year_from):04d}-01-01")
@@ -245,7 +250,7 @@ def _fetch_country_map(cursor, title_ids):
 def get_titles(page=1, limit=20, sort_by="release_date", order="desc",
                title_type=None, search=None, region=None, min_rating=None, watch_status=None,
                genre=None, max_runtime=None, exclude_watched=False, released_after=None,
-               year_from=None, year_to=None):
+               released_before=None, year_from=None, year_to=None):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -307,6 +312,11 @@ def get_titles(page=1, limit=20, sort_by="release_date", order="desc",
             if released_after:
                 filters.append("length(t.release_date) = 10 AND t.release_date >= ?")
                 params.append(str(released_after))
+            if released_before:
+                # R4-02：片单分支与普通列表共用同一窗口语义；目录缺失时
+                # t.release_date 为 NULL，length 条件为假自动排除。
+                filters.append("length(t.release_date) = 10 AND t.release_date <= ?")
+                params.append(str(released_before))
             if year_from is not None:
                 filters.append("length(t.release_date) = 10 AND t.release_date >= ?")
                 params.append(f"{int(year_from):04d}-01-01")
@@ -383,6 +393,7 @@ def get_titles(page=1, limit=20, sort_by="release_date", order="desc",
                 max_runtime=max_runtime,
                 exclude_watched=exclude_watched,
                 released_after=released_after,
+                released_before=released_before,
                 year_from=year_from,
                 year_to=year_to,
             )
@@ -901,23 +912,26 @@ def get_stats():
 
         # WP-5 题材 facet：json_each 展开 genres_json，归一化后按作品数排序；
         # 老数据（未回填）在此合并英文别名，前端只显示 count > 0 的题材。
+        # R4-03：先按规范题材累积作品 id 集合再取集合大小，
+        # 同一作品携带多个别名（如 Science Fiction + Sci-Fi & Fantasy）只计一次。
         genres = []
         try:
             cursor.execute(f"""
-                SELECT je.value AS name, COUNT(DISTINCT t.id) AS count
+                SELECT t.id AS title_id, je.value AS name
                 FROM titles t, json_each(t.genres_json) je
                 WHERE {DEFAULT_VISIBILITY_CONDITION_T}
                   AND t.genres_json IS NOT NULL
                   AND json_valid(t.genres_json)
-                GROUP BY je.value
             """)
-            merged = {}
+            genre_titles = {}
             for row in cursor.fetchall():
                 for name in normalize_genres([row["name"]]):
-                    merged[name] = merged.get(name, 0) + int(row["count"] or 0)
+                    genre_titles.setdefault(name, set()).add(row["title_id"])
             genres = [
-                {"name": name, "count": count}
-                for name, count in sorted(merged.items(), key=lambda item: (-item[1], item[0]))
+                {"name": name, "count": len(title_ids)}
+                for name, title_ids in sorted(
+                    genre_titles.items(), key=lambda item: (-len(item[1]), item[0])
+                )
             ]
         except Exception:
             genres = []
@@ -982,6 +996,49 @@ def get_stats():
         )
         latest_sync = cursor.fetchone()
 
+        # D1：数据质量与核验进度聚合——只暴露能指导行动的字段，
+        # 成功空结果（checked_empty）不等于失败，也不强迫制造渠道。
+        cursor.execute(f"""
+            SELECT COALESCE(t.zh_quality, 'unknown') AS quality, COUNT(*) AS count
+            FROM titles t
+            WHERE {DEFAULT_VISIBILITY_CONDITION_T}
+            GROUP BY COALESCE(t.zh_quality, 'unknown')
+        """)
+        zh_quality = {row["quality"]: row["count"] for row in cursor.fetchall()}
+
+        cursor.execute(f"""
+            SELECT
+                SUM(CASE WHEN t.providers_checked_at IS NOT NULL
+                          AND t.providers_checked_at >= datetime('now', '-30 days')
+                         THEN 1 ELSE 0 END) AS verified_recent,
+                SUM(CASE WHEN t.providers_checked_at IS NOT NULL
+                          AND t.providers_checked_at < datetime('now', '-30 days')
+                         THEN 1 ELSE 0 END) AS verified_stale,
+                SUM(CASE WHEN t.providers_checked_at IS NULL THEN 1 ELSE 0 END) AS never_checked,
+                SUM(CASE WHEN t.providers_checked_at IS NOT NULL
+                          AND NOT EXISTS (
+                              SELECT 1 FROM title_provider_availability a
+                              WHERE a.title_id = t.id AND a.is_active = 1
+                          ) THEN 1 ELSE 0 END) AS checked_empty
+            FROM titles t
+            WHERE {DEFAULT_VISIBILITY_CONDITION_T}
+        """)
+        provider_row = cursor.fetchone()
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT o.title_id) AS count
+            FROM title_watch_offers o
+            JOIN titles t ON t.id = o.title_id
+            WHERE o.is_active = 1 AND {DEFAULT_VISIBILITY_CONDITION_T}
+        """)
+        active_offer_titles = cursor.fetchone()["count"]
+        provider_check = {
+            "verified_recent": int(provider_row["verified_recent"] or 0),
+            "verified_stale": int(provider_row["verified_stale"] or 0),
+            "never_checked": int(provider_row["never_checked"] or 0),
+            "checked_empty": int(provider_row["checked_empty"] or 0),
+            "active_offer_titles": int(active_offer_titles or 0),
+        }
+
         result = {
             "total": total,
             "by_type": by_type,
@@ -996,6 +1053,8 @@ def get_stats():
             "by_status": by_status,
             "library_pending": library_pending,
             "latest_sync": dict(latest_sync) if latest_sync else None,
+            "zh_quality": zh_quality,
+            "provider_check": provider_check,
         }
     finally:
         conn.close()

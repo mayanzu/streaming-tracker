@@ -30,7 +30,8 @@ _TMDB_TIMEOUT = httpx.Timeout(3.0, connect=2.0)
 
 _cache = {}
 _cache_lock = threading.Lock()
-_warmup_tasks: set[asyncio.Task] = set()
+# cache key -> in-flight 预热任务：同一 key 未完成时跳过重复调度（R4-07）
+_warmup_tasks: dict[tuple, asyncio.Task] = {}
 
 
 def _cache_get(key):
@@ -55,6 +56,13 @@ def _cache_set(key, value, ttl):
                 item for item, (expire, _) in _cache.items() if expire <= now
             ]:
                 _cache.pop(stale_key, None)
+            overflow = len(_cache) - _MAX_CACHE_ENTRIES
+            if overflow > 0:
+                # 清过期后仍超容量：按到期时间淘汰最旧项，维持硬上限
+                for stale_key, _ in sorted(
+                    _cache.items(), key=lambda item: item[1][0]
+                )[:overflow]:
+                    _cache.pop(stale_key, None)
 
 
 async def _fetch_tmdb_recommendation_ids(tmdb_id, media_type):
@@ -87,8 +95,10 @@ async def _fetch_tmdb_recommendation_ids(tmdb_id, media_type):
     return ids
 
 
-def _on_warmup_done(task):
-    _warmup_tasks.discard(task)
+def _on_warmup_done(task, cache_key):
+    # 仅清理仍属于该 key 的任务，避免被同 key 的新任务覆盖后误删
+    if _warmup_tasks.get(cache_key) is task:
+        _warmup_tasks.pop(cache_key, None)
     if task.cancelled():
         return
     exc = task.exception()
@@ -97,8 +107,16 @@ def _on_warmup_done(task):
 
 
 def _schedule_warmup(tmdb_id, media_type):
-    """后台预热远端推荐缓存；失败不影响当前请求。"""
+    """后台预热远端推荐缓存；失败不影响当前请求。
+
+    R4-07：同一 cache key 已有未完成的预热任务时跳过重复调度，
+    避免高频浏览同一作品时放大远端请求；任务结束即从映射中清理。
+    """
     if not TMDB_API_KEY:
+        return
+    cache_key = ("tmdb", media_type, tmdb_id)
+    pending = _warmup_tasks.get(cache_key)
+    if pending is not None and not pending.done():
         return
     try:
         task = asyncio.get_running_loop().create_task(
@@ -106,8 +124,8 @@ def _schedule_warmup(tmdb_id, media_type):
         )
     except RuntimeError:
         return
-    _warmup_tasks.add(task)
-    task.add_done_callback(_on_warmup_done)
+    _warmup_tasks[cache_key] = task
+    task.add_done_callback(lambda done: _on_warmup_done(done, cache_key))
 
 
 def _load_base_sync(title_id):
@@ -168,7 +186,6 @@ async def get_related_titles_async(title_id, limit=12):
     if not base:
         return []
 
-    local_task = asyncio.to_thread(get_related_titles, title_id, max(limit * 2, limit))
     results = []
 
     if base.get("tmdb_id"):
@@ -184,8 +201,11 @@ async def get_related_titles_async(title_id, limit=12):
             _schedule_warmup(base["tmdb_id"], base["type"])
 
     if len(results) < limit:
+        # R4-07：只有需要补足时才创建并等待本地查询，避免 coroutine 未 await
+        local = await asyncio.to_thread(
+            get_related_titles, title_id, max(limit * 2, limit)
+        )
         existing = {item["id"] for item in results}
-        local = await local_task
         for item in local:
             if item["id"] in existing:
                 continue

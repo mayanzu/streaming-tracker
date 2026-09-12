@@ -118,6 +118,18 @@ async def ready(request: Request, response: Response):
     if status != "ready":
         response.status_code = 503
 
+    # D1：给运维一个不需要解析完整 stats 的数据健康摘要
+    data_health = None
+    if stats:
+        zh = stats.get("zh_quality") or {}
+        checks = stats.get("provider_check") or {}
+        data_health = {
+            "zh_unknown": int(zh.get("unknown", 0)),
+            "provider_never_checked": int(checks.get("never_checked", 0)),
+            "provider_verified_recent": int(checks.get("verified_recent", 0)),
+            "active_offer_titles": int(checks.get("active_offer_titles", 0)),
+        }
+
     return {
         "status": status,
         "issues": issues,
@@ -128,6 +140,7 @@ async def ready(request: Request, response: Response):
         "last_update": last_update,
         "last_synced_at": last_synced_at,
         "latest_sync": latest_sync,
+        "data_health": data_health,
     }
 
 
@@ -151,7 +164,12 @@ def list_titles(
     year_to: int | None = Query(None, ge=1900, le=2100),
     exclude_watched: bool = Query(False),
     released_after: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    released_before: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
+    # R4-02：近期窗口由调用方成对传入 [released_after, released_before]；
+    # 顺序倒置时显式报错，不静默返回空结果。
+    if released_after and released_before and released_before < released_after:
+        raise HTTPException(status_code=422, detail="released_before 不能早于 released_after")
     return get_titles(
         page=page, limit=limit,
         sort_by=sort_by, order=order, title_type=title_type,
@@ -159,6 +177,7 @@ def list_titles(
         watch_status=watch_status, genre=genre, max_runtime=max_runtime,
         year_from=year_from, year_to=year_to,
         exclude_watched=exclude_watched, released_after=released_after,
+        released_before=released_before,
     )
 
 
