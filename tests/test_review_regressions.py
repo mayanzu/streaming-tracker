@@ -207,21 +207,33 @@ def test_channels_backfill_parser_keeps_display_names():
 
 
 def test_channels_backfill_save_and_candidate_progress():
-    """回填写入 label 后，该作品退出候选集（逐步推进可验证）。"""
+    """回填写入 label 后 30 天内退出候选；超过复查期重新进入候选（R4-04）。"""
     from app.backfill_channels import _load_candidates, _save_channels
+    from app.db.utils import _utc_now
 
     tid = _insert_title(900110, title="渠道回填验证", rating=8.4, votes=5000)
     _add_availability(tid, "others")
     ids_before = {c["id"] for c in _load_candidates()}
     assert tid in ids_before
     rows = _save_channels(tid, ["others"], {"others": ["US"]},
-                          {"others": ["MUBI"]}, "2024-01-01T00:00:00")
+                          {"others": ["MUBI"]}, _utc_now())
     assert rows >= 1
     detail = get_title_detail(tid)
     by_name = {d["provider"]: d for d in detail["provider_details"]}
     assert by_name["others"]["labels"] == ["MUBI"]
-    ids_after = {c["id"] for c in _load_candidates()}
-    assert tid not in ids_after
+    # 刚核验完（30 天复查期内）退出候选集，避免重复请求
+    assert tid not in {c["id"] for c in _load_candidates()}
+    # R4-04：核验时间过期后，资料完整的记录也必须重新进入候选复查，发现渠道下架
+    conn = sqlite3.connect(os.environ["DATABASE_URL"])
+    try:
+        conn.execute(
+            "UPDATE titles SET providers_checked_at='2020-01-01T00:00:00' WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert tid in {c["id"] for c in _load_candidates()}
 
 
 def test_channels_backfill_empty_marks_checked():

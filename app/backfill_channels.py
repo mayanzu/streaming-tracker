@@ -14,8 +14,9 @@
 - 请求成功：upsert 本次看到的渠道行，并把该片本次未出现的活跃行标记失效
   （只有单片核验成功后才发布否定结论）；
 - 无论是否命中渠道都记录 `providers_checked_at`，空结果 30 天内不重复请求；
-- 候选集同时覆盖"有未标注渠道"与"已无活跃渠道（可能被旧时钟策略误停用）"
-  的作品，可分批、断点续跑。
+- 候选资格只看核验时间（未核验或已过期），资料完整性只影响优先级：
+  优先组回填缺失数据，复查组定期复查完整老记录是否下架，
+  固定预算避免复查组被优先组长期挤占，可分批、断点续跑。
 """
 
 import argparse
@@ -33,42 +34,99 @@ from app.fetcher.tmdb import fetch_tmdb
 
 logger = logging.getLogger("channels-backfill")
 CHUNK_SIZE = 50
-# 无渠道结果的重查间隔：TMDB 侧未来可能上架，避免每次全量重复请求
+# 成功后（含空结果）的重查间隔：TMDB 侧未来可能上架/下架，避免每次全量重复请求
 RECHECK_DAYS = 30
+
+# R4-04 候选资格：只按核验时间判断；资料完整性仅影响优先级，不再排除候选
+_ELIGIBLE_CONDITION = (
+    "t.providers_checked_at IS NULL"
+    f" OR t.providers_checked_at < datetime('now', '-{RECHECK_DAYS} days')"
+)
+# R4-04 优先组：未核验或资料缺失（活跃渠道缺标签 / 无活跃渠道 /
+# 仍有 provider_id=0 的活跃 offer），说明旧数据尚未形成逐地区否定结论
+_PRIORITY_CONDITION = """
+    (
+        t.providers_checked_at IS NULL
+        OR EXISTS (
+            SELECT 1 FROM title_provider_availability a
+            WHERE a.title_id = t.id AND a.is_active = 1
+              AND (a.provider_label IS NULL OR a.provider_label = '')
+        )
+        OR NOT EXISTS (
+            SELECT 1 FROM title_provider_availability a
+            WHERE a.title_id = t.id AND a.is_active = 1
+        )
+        OR EXISTS (
+            SELECT 1 FROM title_watch_offers o
+            WHERE o.title_id = t.id AND o.is_active = 1 AND o.provider_id = 0
+        )
+    )
+"""
+
+
+def _fetch_candidate_group(cursor, condition, order, limit):
+    """按条件取一组候选；limit=0 表示不限制。"""
+    query = f"""
+        SELECT t.id, t.tmdb_id, t.type, t.title
+        FROM titles t
+        WHERE ({_ELIGIBLE_CONDITION})
+          AND {condition}
+        ORDER BY {order}
+    """
+    params = []
+    if limit and limit > 0:
+        query += " LIMIT ?"
+        params.append(limit)
+    return [dict(row) for row in cursor.execute(query, params)]
+
+
+def _merge_candidate_groups(priority, routine, limit):
+    """合并两级队列：复查组保留约一半名额（至少 1 条），一组不足由另一组补足。"""
+    if not limit:
+        return priority + routine
+    if not priority:
+        return routine[:limit]
+    if not routine:
+        return priority[:limit]
+    quota_routine = max(1, limit // 2)
+    quota_priority = limit - quota_routine
+    if quota_priority <= 0:
+        # limit=1 无法同时给两组配额：优先保证未核验/资料缺失组先回填，
+        # 复查组名额从下一个批次开始生效。
+        return priority[:limit]
+    selected_priority = priority[:quota_priority]
+    selected_routine = routine[:quota_routine]
+    need = limit - len(selected_priority) - len(selected_routine)
+    if need > 0:
+        selected_priority += priority[len(selected_priority):len(selected_priority) + need]
+        need = limit - len(selected_priority) - len(selected_routine)
+        if need > 0:
+            selected_routine += routine[len(selected_routine):len(selected_routine) + need]
+    return selected_priority + selected_routine
 
 
 def _load_candidates(limit=0, newest_first=False):
+    """加载两级候选队列（R4-04）。
+
+    候选资格只看 providers_checked_at：为空（从未核验）或早于 RECHECK_DAYS 天。
+    资料完整性只影响优先级，不再排除候选：
+    - 优先组：从未核验，或资料缺失（活跃渠道缺标签 / 无活跃渠道 /
+      仍有 provider_id=0 的活跃 offer）；
+    - 复查组：已成功核验且资料完整，但已过复查期，用于发现渠道下架。
+
+    limit>0 时为复查组保留约一半名额（至少 1 条），任一组不足时由另一组补足，
+    避免完整老记录长期被缺失数据挤出。输出顺序为优先组在前；组内保持确定性：
+    默认按 t.id 升序，newest_first 时按上映日期倒序。
+    """
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         order = "date(t.release_date) DESC, t.id DESC" if newest_first else "t.id"
-        query = f"""
-            SELECT DISTINCT t.id, t.tmdb_id, t.type, t.title
-            FROM titles t
-            WHERE (t.providers_checked_at IS NULL
-                   OR t.providers_checked_at < datetime('now', '-{RECHECK_DAYS} days'))
-              AND (
-                  EXISTS (
-                      SELECT 1 FROM title_provider_availability a
-                      WHERE a.title_id = t.id AND a.is_active = 1
-                        AND (a.provider_label IS NULL OR a.provider_label = '')
-                  )
-                  OR NOT EXISTS (
-                      SELECT 1 FROM title_provider_availability a
-                      WHERE a.title_id = t.id AND a.is_active = 1
-                  )
-                  OR EXISTS (
-                      SELECT 1 FROM title_watch_offers o
-                      WHERE o.title_id = t.id AND o.is_active = 1 AND o.provider_id = 0
-                  )
-              )
-            ORDER BY {order}
-        """
-        params = []
-        if limit and limit > 0:
-            query += " LIMIT ?"
-            params.append(limit)
-        return [dict(row) for row in cursor.execute(query, params)]
+        fetch_limit = limit if limit and limit > 0 else 0
+        # 两组各取 limit 条：某组不足时才有足够数据由另一组补足
+        priority = _fetch_candidate_group(cursor, _PRIORITY_CONDITION, order, fetch_limit)
+        routine = _fetch_candidate_group(cursor, f"NOT {_PRIORITY_CONDITION}", order, fetch_limit)
+        return _merge_candidate_groups(priority, routine, fetch_limit)
     finally:
         conn.close()
 
