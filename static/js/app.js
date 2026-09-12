@@ -17,8 +17,9 @@ const state = {
     releasedDays: 0,       // 6.2 近期新片窗口（天）：0=不限
     viewingRegion: '',     // 6.1 观看地区：用于过滤详情渠道
     surpriseScope: 'filters', // 6.6 惊喜发现范围：filters | watchlist | watching
-    surpriseRecent: [],    // 最近抽过的作品 id（避免连续重复）
-    surpriseLastId: null,  // 当前惊喜结果作品 id
+    surpriseRecent: [],    // 最近抽过的作品引用键（titleRefKey，避免连续重复）
+    surpriseLastId: null,  // 兼容旧字段：当前惊喜结果的目录 id（快照为 null）
+    surpriseLastRef: null, // R4-05：当前惊喜结果的统一引用（catalog 或 snapshot）
     batchMode: false,      // 6.7 批量管理我的片单
     selectedIds: new Set(),
     loading: false,
@@ -50,7 +51,7 @@ const SECTION_DEFAULTS = {
 };
 // 列表排序标签：chip、手机摘要与下拉统一使用（R10）
 const SORT_LABELS = {
-    release_date: '最近上映', rating: '评分最高',
+    release_date: '最近上映', rating: '综合口碑',
     updated_at: '最近加入', priority: '优先级',
 };
 const MONETIZATION_LABELS = {
@@ -81,7 +82,16 @@ try { state.surpriseScope = localStorage.getItem('surprise_scope_v1') || 'filter
 if (!['filters', 'watchlist', 'watching'].includes(state.surpriseScope)) state.surpriseScope = 'filters';
 try {
     const surpriseRaw = JSON.parse(localStorage.getItem('surprise_recent_v1') || '[]');
-    state.surpriseRecent = Array.isArray(surpriseRaw) ? surpriseRaw.map(Number).filter(Number.isInteger).slice(0, 10) : [];
+    // R4-05：新格式是 titleRefKey 字符串（catalog:<id> / snapshot:<type>:<tmdb>）；
+    // 旧数据是数字 id，读取时兼容映射为 catalog:<id>，避免升级后去重记录失效。
+    state.surpriseRecent = Array.isArray(surpriseRaw)
+        ? surpriseRaw.map(item => {
+            const text = String(item ?? '');
+            if (/^catalog:\d+$/.test(text) || /^snapshot:[a-z]+:\d+$/.test(text)) return text;
+            const legacyId = Number(text);
+            return Number.isInteger(legacyId) && legacyId > 0 ? `catalog:${legacyId}` : '';
+        }).filter(Boolean).slice(0, 10)
+        : [];
 } catch (_) { state.surpriseRecent = []; }
 
 /* 播放平台只在详情中展示。六大主流保留品牌色；others 显示 TMDB 原始
@@ -726,6 +736,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupAdminMenu();
     setupFilterToggle();
     setupFilterPopover();
+    setupFilterMoreDetails();
     setupModalSwipe();
     setupWall();
     setupInfiniteScroll();
@@ -807,6 +818,14 @@ function hydrateStateFromUrl() {
 /* 6.2：近期新片窗口 → API 起始日期（YYYY-MM-DD） */
 function releasedAfterDate(days) {
     return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+}
+
+/* R4-02：今天（本地时区）的 YYYY-MM-DD，作为近期窗口的闭合上界 */
+function todayDateString() {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${now.getFullYear()}-${month}-${day}`;
 }
 
 function updateUrl() {
@@ -941,17 +960,11 @@ function renderStats(data) {
         if (statsRendered) el.textContent = text;
         else animateNumber(el, value, decimals);
     };
-    setNumber('[data-stat="total"]', Number(data.total || 0));
-    setNumber('[data-stat="added"]', Number(data.added_this_week || 0));
-    setNumber('[data-stat="list"]', listTotal);
+    // U01：收录统计移到页脚与导航计数，首屏 intro 不再渲染数字
     const footerTotal = document.getElementById('footer-total');
     if (footerTotal) footerTotal.textContent = Number(data.total || 0).toLocaleString();
-    const introTotal = document.getElementById('intro-total');
-    if (introTotal) introTotal.textContent = Number(data.total || 0).toLocaleString();
-    const introUpdated = document.getElementById('intro-updated');
-    if (introUpdated) {
-        introUpdated.textContent = data.last_synced_at ? ` ${formatRelativeDate(new Date(data.last_synced_at))}` : ' 今天';
-    }
+    const footerAdded = document.getElementById('footer-added');
+    if (footerAdded) footerAdded.textContent = Number(data.added_this_week || 0).toLocaleString();
     const freshness = document.getElementById('footer-freshness');
     if (freshness) {
         const parts = [];
@@ -1159,7 +1172,9 @@ function startSyncPolling() {
 /* N16：桌面显示完整计数，手机只显示“N 部”；“已显示 N”在手机上收进加载提示 */
 function formatStatsHtml(total, loaded, noun, extraHtml = '') {
     const totalText = Number(total).toLocaleString();
-    const full = `<span class="stats-full">找到 <strong>${totalText}</strong> ${noun}${total ? ` · 已显示 ${loaded}` : ''}${extraHtml}</span>`;
+    // U02：解释加权排序，避免用户以为“8.8 排在 8.9 前”是错误
+    const sortNote = state.sort_by === 'rating' ? ' · 按综合口碑（结合 IMDb 评分与评价人数）' : '';
+    const full = `<span class="stats-full">找到 <strong>${totalText}</strong> ${noun}${total ? ` · 已显示 ${loaded}` : ''}${extraHtml}${sortNote}</span>`;
     const compact = `<span class="stats-compact"><strong>${totalText}</strong> 部</span>`;
     return full + compact;
 }
@@ -1197,6 +1212,9 @@ async function loadTitles() {
             extraHtml += ` · 其中 <strong>${libraryPending}</strong> 部资料待补全`;
         }
         document.getElementById('stats-info').innerHTML = formatStatsHtml(result.total, loaded, noun, extraHtml);
+        // U04：抽屉底部主动作显示真实结果数，用户不必先猜有多少部
+        const applyButton = document.querySelector('.drawer-apply');
+        if (applyButton) applyButton.textContent = `查看结果（${Number(result.total).toLocaleString()} 部）`;
         state.hasMore = Boolean(result.has_next);
         document.getElementById('scroll-sentinel').classList.toggle('hidden', !state.hasMore);
         // N16：只有确实还有没加载完的作品时才提示“已浏览全部”
@@ -1369,7 +1387,7 @@ function createTitleCard(title, rank = null, index = 0) {
             </div>
         </button>
         <div class="status-menu-wrap">
-            <button class="status-menu-trigger ${status ? 'has-status' : ''}" type="button" aria-label="设置 ${escapeHtml(title.title)} 的片单状态" aria-haspopup="menu" aria-expanded="false">
+            <button class="status-menu-trigger ${status ? 'has-status' : ''}" type="button" data-status-menu-trigger aria-controls="${escapeHtml(statusMenuId(title.id))}" aria-label="设置 ${escapeHtml(title.title)} 的片单状态" aria-haspopup="menu" aria-expanded="false">
                 ${bookmarkIcon(status)}
             </button>
             ${statusMenuHtml(title.id, status)}
@@ -1416,7 +1434,7 @@ function createTitleListItem(title, rank = null, index = 0) {
             </div>
         </button>
         <div class="status-menu-wrap">
-            <button class="status-menu-trigger ${status ? 'has-status' : ''}" type="button" aria-label="设置 ${escapeHtml(title.title)} 的片单状态" aria-haspopup="menu" aria-expanded="false">
+            <button class="status-menu-trigger ${status ? 'has-status' : ''}" type="button" data-status-menu-trigger aria-controls="${escapeHtml(statusMenuId(title.id))}" aria-label="设置 ${escapeHtml(title.title)} 的片单状态" aria-haspopup="menu" aria-expanded="false">
                 ${bookmarkIcon(status)}
             </button>
             ${statusMenuHtml(title.id, status)}
@@ -1590,6 +1608,8 @@ function syncBatchUI() {
 
 function refreshBatchSelectionUI() {
     document.querySelectorAll('.title-card').forEach(card => {
+        // 快照暂不支持批量状态操作：只刷新目录卡片，快照卡片不进入选中集合
+        if (card.dataset.titleKey) { card.classList.remove('is-selected'); return; }
         card.classList.toggle('is-selected', state.selectedIds.has(Number(card.dataset.titleId)));
     });
 }
@@ -1641,11 +1661,19 @@ function bookmarkIcon(filled = '') {
     return `<svg viewBox="0 0 24 24" fill="${filled ? 'currentColor' : 'none'}"><path d="M7 4.5h10v15l-5-3-5 3z"/></svg>`;
 }
 
+/* R4-06：状态菜单唯一 id。目录用 title id，快照用 entry key（冒号转连字符）。 */
+function statusMenuId(id, key = '') {
+    return key
+        ? `status-menu-entry-${String(key).replace(/[^a-zA-Z0-9_-]/g, '-')}`
+        : `status-menu-title-${Number(id)}`;
+}
+
 function statusMenuHtml(id, current, key = '') {
     const options = [
         ['', '不在片单'], ['watchlist', '想看'], ['watching', '在看'], ['watched', '已看'],
     ];
-    return `<div class="status-menu hidden" role="menu" aria-label="选择片单状态">
+    // R4-06：菜单显式 id，触发器通过 aria-controls 指向它
+    return `<div class="status-menu hidden" id="${escapeHtml(statusMenuId(id, key))}" role="menu" aria-label="选择片单状态">
         ${options.map(([value, label]) => `<button type="button" role="menuitem" data-title-id="${id}"${key ? ` data-title-key="${key}"` : ''} data-set-status="${value}" class="${current === value ? 'active' : ''}">${label}</button>`).join('')}
     </div>`;
 }
@@ -1686,6 +1714,8 @@ function alertIcon() {
 
 async function showDetail(id, options = {}) {
     const opts = typeof options === 'object' && options !== null ? options : {};
+    // R4-06：打开详情前收起可能残留的状态菜单（不抢焦点，随后焦点进入详情）
+    closeStatusMenus();
     const modal = document.getElementById('detail-modal');
     const content = document.getElementById('detail-content');
     const numId = Number(id);
@@ -1770,17 +1800,34 @@ function buildFilterParams(extra = {}) {
     if (years?.year_from) params.set('year_from', String(years.year_from));
     if (years?.year_to) params.set('year_to', String(years.year_to));
     if (state.maxRuntime > 0) params.set('max_runtime', String(state.maxRuntime));
-    if (state.releasedDays > 0) params.set('released_after', releasedAfterDate(state.releasedDays));
+    // R4-02：近期窗口是闭区间 [起始日, 今天]，成对传递上界以排除未来上映作品；
+    // URL 恢复/分享只持久化 fresh=天数，两个日期都从这里统一派生，保证各入口一致。
+    if (state.releasedDays > 0) {
+        params.set('released_after', releasedAfterDate(state.releasedDays));
+        params.set('released_before', todayDateString());
+    }
     if (state.excludeWatched && !state.watchStatus) params.set('exclude_watched', 'true');
     if (state.watchStatus) params.set('watch_status', state.watchStatus);
     return params;
 }
 
-/* 6.6 惊喜发现：范围可选（当前筛选/我的想看/我的在看），避开最近抽过的作品 */
-function rememberSurprise(id) {
-    const numId = Number(id);
-    state.surpriseRecent = [numId, ...state.surpriseRecent.filter(item => Number(item) !== numId)].slice(0, 10);
+/* 6.6 惊喜发现：范围可选（当前筛选/我的想看/我的在看），避开最近抽过的作品。
+ * R4-05：抽选、最近记录、详情打开与状态写入统一使用 titleRefKey 引用，
+ * 不再把 Number(null) 当作有效目录 id，也不让所有快照共享同一个去重键。 */
+function rememberSurprise(ref) {
+    const refKey = titleRefKey(ref);
+    if (!refKey) return;
+    state.surpriseRecent = [refKey, ...state.surpriseRecent.filter(item => item !== refKey)].slice(0, 10);
     try { localStorage.setItem('surprise_recent_v1', JSON.stringify(state.surpriseRecent)); } catch (_) { /* 忽略 */ }
+}
+
+/* R4-05：当前详情是否就是惊喜抽选结果（优先统一引用，兼容旧数值字段） */
+function titleMatchesSurpriseRef(title) {
+    if (state.surpriseLastRef) {
+        const ref = getTitleRef(title);
+        return Boolean(ref) && titleRefKey(ref) === titleRefKey(state.surpriseLastRef);
+    }
+    return state.surpriseLastId != null && Number(title.id) === Number(state.surpriseLastId);
 }
 
 function surpriseScopeLabel(scope = state.surpriseScope) {
@@ -1816,6 +1863,7 @@ function renderSurpriseBar(title, total, scope) {
 function hideSurpriseBar() {
     document.getElementById('surprise-bar')?.classList.add('hidden');
     state.surpriseLastId = null;
+    state.surpriseLastRef = null;
 }
 
 async function surprisePick() {
@@ -1831,25 +1879,29 @@ async function surprisePick() {
             showToast(scope === 'filters' ? '当前筛选范围内没有可挑选的作品' : `你的${watchStatusNames[scope]}还是空的`, 'warn');
             return;
         }
-        // 最多重试 6 次避开最近抽过的作品；范围很小时接受重复
-        let title = null;
-        for (let attempt = 0; attempt < 6; attempt++) {
+        // 最多重试 6 次避开最近抽过的作品；范围很小时接受重复。
+        // R4-05：既没有有效目录 id、也没有 tmdb_id/type 的候选直接跳过，绝不 showDetail(0/null)。
+        let picked = null;
+        for (let attempt = 0; attempt < 6 && !picked; attempt++) {
             const idx = Math.floor(Math.random() * total);
             const page = Math.floor(idx / state.limit) + 1;
             const pos = idx % state.limit;
             const result = page === 1 ? first : await surpriseFetch(scope, page);
             const candidate = (result.data || [])[pos] || (result.data || [])[0];
             if (!candidate) break;
-            if (!state.surpriseRecent.includes(Number(candidate.id)) || attempt === 5) {
-                title = candidate;
-                break;
+            const ref = getTitleRef(candidate);
+            if (!ref) continue;
+            if (!state.surpriseRecent.includes(titleRefKey(ref)) || attempt === 5) {
+                picked = { ref, row: candidate };
             }
         }
-        if (!title) { showToast('未找到作品，再试一次', 'warn'); return; }
-        rememberSurprise(title.id);
-        state.surpriseLastId = Number(title.id);
-        showDetail(title.id);
-        renderSurpriseBar(title, total, scope);
+        if (!picked) { showToast('没有找到可打开的作品，再试一次', 'warn'); return; }
+        rememberSurprise(picked.ref);
+        state.surpriseLastRef = picked.ref;
+        // 兼容旧字段与旧判断：快照没有目录 id 时保留 null
+        state.surpriseLastId = picked.ref.kind === 'catalog' ? picked.ref.id : null;
+        renderSurpriseBar(picked.row, total, scope);
+        openTitleRef(picked.ref, picked.row);
     } catch (error) {
         showToast(userMessage(error), 'error');
     } finally {
@@ -1921,7 +1973,18 @@ function providerChannelName(offer) {
     return providerNames[group] || offer.provider_name;
 }
 
-function renderOfferList(offers) {
+/* U05：地区折叠改为可点击展开，手机不再依赖 hover/title 才能看全渠道 */
+function regionFoldHtml(regions) {
+    const codes = (regions || []).filter(Boolean);
+    if (!codes.length) return '';
+    const full = codes.map(code => displayRegionName(code, true)).join('、');
+    if (codes.length <= 2) return ` · ${escapeHtml(full)}`;
+    return ` · <button type="button" class="region-more" data-action="toggle-regions"`
+        + ` aria-expanded="false" data-label="查看全部 ${codes.length} 个地区">查看全部 ${codes.length} 个地区</button>`
+        + `<span class="region-list hidden">${escapeHtml(full)}</span>`;
+}
+
+function renderOfferList(offers, title = null) {
     const viewingRegion = state.viewingRegion;
     // R02：先按所选地区过滤 offer，再按平台合并；观看方式不跨地区串台
     const scopedOffers = viewingRegion
@@ -1943,20 +2006,20 @@ function renderOfferList(offers) {
     const verified = scopedOffers.map(offer => offer.verified_at).filter(Boolean).sort().pop() || '';
     const chips = displayed.map(item => {
         const regions = [...item.regions];
-        const regionText = viewingRegion
-            ? ''
-            : regions.length > 2
-                ? ` · ${regions.slice(0, 2).map(code => displayRegionName(code, true)).join('、')} 等 ${regions.length} 个地区`
-                : ` · ${regions.map(code => displayRegionName(code, true)).join('、')}`;
+        const regionHtml = viewingRegion ? '' : regionFoldHtml(regions);
         const monetization = [...item.monetizations].filter(Boolean).join(' / ');
         return `<span class="modal-provider">
             <span class="p-dot" style="background:${providerColors[item.group] || '#7f7d75'}"></span>
-            <strong>${escapeHtml(item.name)}</strong>${monetization ? ` · ${escapeHtml(monetization)}` : ''}${escapeHtml(regionText)}</span>`;
+            <strong>${escapeHtml(item.name)}</strong>${monetization ? ` · ${escapeHtml(monetization)}` : ''}${regionHtml}</span>`;
     });
     let note = '';
     if (viewingRegion && !displayed.length) {
         chips.push(`<p class="provider-note provider-note-strong">在${escapeHtml(viewingRegionName(viewingRegion))}暂无已核验的观看渠道。</p>`);
-        note = '该地区尚未核验，或已核验但暂无渠道。';
+        // U05：区分“已核验暂无”与“尚未核验”，并给出核验时间，用户能判断结果是否可信
+        const checkedAt = title?.providers_checked_at ? formatVerifiedDate(title.providers_checked_at) : '';
+        note = checkedAt
+            ? `该片最近核验：${checkedAt}；当前结果代表“已核验暂无”，不是核验失败。`
+            : '该片尚未完成渠道核验；当前结果不代表该地区确定没有渠道。';
     } else if (viewingRegion) {
         note = `已按${escapeHtml(viewingRegionName(viewingRegion))}过滤，核验时间取自对应地区。`;
     } else {
@@ -1969,20 +2032,16 @@ function renderOfferList(offers) {
 function renderChannelChip(d, pending = false) {
     const isUnlabeledOthers = d.provider === 'others' && !(d.labels || []).length;
     const regionCodes = d.regions || [];
-    const shown = regionCodes.slice(0, 2).map(code => displayRegionName(code, true)).join('、');
-    const regionText = pending || !regionCodes.length
-        ? ''
-        : regionCodes.length > 2
-            ? ` · ${shown} 等 ${regionCodes.length} 个地区`
-            : ` · ${shown}`;
-    const name = isUnlabeledOthers
+    const baseName = isUnlabeledOthers
         ? `其他平台 · ${Math.max(regionCodes.length, 1)} 个地区（待核验）`
-        : `${d.provider === 'others' ? otherProviderLabel(d.labels) : (providerNames[d.provider] || d.provider)}${regionText}`;
+        : (d.provider === 'others' ? otherProviderLabel(d.labels) : (providerNames[d.provider] || d.provider));
     const tip = pending || !regionCodes.length
         ? '地区待确认'
         : `覆盖地区：${regionCodes.map(code => displayRegionName(code, true)).join('、')}`;
+    // U05：历史渠道同样提供可点击的地区展开，title 仅作桌面补充
+    const regionHtml = pending || isUnlabeledOthers ? '' : regionFoldHtml(regionCodes);
     return `<span class="modal-provider${pending ? ' is-pending' : ''}" title="${escapeHtml(tip)}">
-        <span class="p-dot" style="background:${providerColors[d.provider] || '#7f7d75'}"></span>${escapeHtml(name)}</span>`;
+        <span class="p-dot" style="background:${providerColors[d.provider] || '#7f7d75'}"></span>${escapeHtml(baseName)}${regionHtml}</span>`;
 }
 
 function buildChannelView(title) {
@@ -1995,7 +2054,7 @@ function buildChannelView(title) {
     let verified = '';
     if (structuredOffers.length) {
         // R02：有逐地区结构化 offer 时按地区过滤、按平台合并展示
-        const offerView = renderOfferList(structuredOffers);
+        const offerView = renderOfferList(structuredOffers, title);
         listHtml = offerView.listHtml;
         noteHtml = offerView.note ? `<p class="provider-note">${offerView.note}</p>` : '';
         verified = offerView.verified;
@@ -2043,10 +2102,13 @@ function actionAreaHtml(title, status, options = {}) {
         : '';
     const copyButton = '<button type="button" class="icon-btn" data-action="copy-link" aria-label="复制这部作品的链接" title="复制链接">⧉</button>';
     if (!status) {
+        // R4-06：详情菜单 id 与卡片菜单区分（同一作品可能同时出现在网格与详情中），
+        // 触发器用 data-status-menu-trigger + aria-controls 与菜单显式关联。
+        const detailMenuId = `status-menu-detail-${Number(title.id)}`;
         return `<div class="split-btn" data-title-id="${title.id}">
             <button type="button" class="btn-primary" data-set-status="watchlist">加入想看</button>
-            <button type="button" class="btn-primary-more" data-action="toggle-status-menu" aria-haspopup="menu" aria-expanded="false" aria-label="更多状态">▾</button>
-            <div class="status-menu hidden" role="menu" aria-label="选择片单状态">
+            <button type="button" class="btn-primary-more" data-action="toggle-status-menu" data-status-menu-trigger aria-controls="${escapeHtml(detailMenuId)}" aria-haspopup="menu" aria-expanded="false" aria-label="更多状态">▾</button>
+            <div class="status-menu hidden" id="${escapeHtml(detailMenuId)}" role="menu" aria-label="选择片单状态">
                 <button type="button" role="menuitem" data-set-status="watching">在看</button>
                 <button type="button" role="menuitem" data-set-status="watched">已看</button>
             </div>
@@ -2120,7 +2182,8 @@ function renderDetail(title, requestId = null) {
     // 6.7 我的记录：优先级 / 个人评分 / 备注 / 观看日期（未加入片单时给出提示）
     const personalSection = `<div class="personal-section" id="personal-section">${personalSectionInnerHtml(title, status)}</div>`;
     // R13：由惊喜发现打开的详情，不关闭模态即可换一部或标记今晚看
-    const isSurprise = Number(title.id) === Number(state.surpriseLastId);
+    // R4-05：按统一引用比较，目录与快照都不依赖 Number(null)
+    const isSurprise = titleMatchesSurpriseRef(title);
     const surpriseRow = isSurprise ? `<div class="surprise-row" role="status">
         <p class="surprise-row-text">来自${escapeHtml(surpriseScopeLabel())}的随机推荐${title.runtime ? ` · ${title.type === 'movie' ? '' : '单集约 '}${Number(title.runtime)} 分钟` : ''}${genres.length ? ` · ${escapeHtml(genres[0])}` : ''}</p>
         <div class="surprise-row-buttons">
@@ -2428,6 +2491,66 @@ function refForIdentity(identity) {
 function refStorageKey(ref) {
     return ref.key || String(ref.id);
 }
+
+/* ── R4-05：目录 id 与个人快照的统一引用 ──
+ * getTitleRef(row)：有有效目录 id 且目录仍可用 → {kind:'catalog'}；
+ * 目录缺失但有 tmdb_id/type 的个人快照 → {kind:'snapshot', key}；
+ * 两者都没有 → null（调用方不得再用 Number(null) 构造 id）。 */
+function getTitleRef(row) {
+    if (!row || typeof row !== 'object') return null;
+    const id = Number(row.id);
+    // catalog_available === false 是后端“目录已缺失、仅保留个人快照”的标记
+    if (row.catalog_available !== false && Number.isInteger(id) && id > 0) {
+        return { kind: 'catalog', id, ref: refForId(id) };
+    }
+    const tmdbId = Number(row.tmdb_id);
+    if ((row.type === 'movie' || row.type === 'tv') && Number.isInteger(tmdbId) && tmdbId > 0) {
+        // key 沿用 missingEntryKey 约定（type:tmdb_id），与 state.snapshotEntries 对齐
+        return { kind: 'snapshot', key: missingEntryKey(row), ref: refForIdentity({ type: row.type, tmdbId }) };
+    }
+    return null;
+}
+
+/* R4-05：稳定去重键；catalog: 与 snapshot: 前缀保证两类身份永不冲突 */
+function titleRefKey(ref) {
+    if (!ref) return '';
+    if (ref.kind === 'catalog' && Number.isInteger(Number(ref.id)) && Number(ref.id) > 0) {
+        return `catalog:${Number(ref.id)}`;
+    }
+    if (ref.kind === 'snapshot' && ref.key) return `snapshot:${ref.key}`;
+    return '';
+}
+
+/* R4-05：按引用打开详情：目录走 showDetail，快照走 openMissingDetail */
+function openTitleRef(ref, row = null) {
+    if (!ref) return false;
+    if (ref.kind === 'catalog') {
+        showDetail(ref.id);
+        return true;
+    }
+    if (ref.kind === 'snapshot') {
+        // 抽选/最近记录返回的快照可能尚未进入 snapshotEntries，先用行数据补齐
+        if (row) state.snapshotEntries.set(ref.key, { ...(state.snapshotEntries.get(ref.key) || {}), ...row });
+        openMissingDetail(ref.key);
+        return true;
+    }
+    return false;
+}
+
+/* R4-05：按引用写入片单状态（快照走 watchlist 身份接口，与详情内操作同一路径） */
+function setTitleStatusByRef(ref, watchStatus, sourceButton = null) {
+    if (!ref) return false;
+    if (ref.kind === 'catalog') {
+        setTitleStatus(ref.id, watchStatus, sourceButton);
+        return true;
+    }
+    if (ref.kind === 'snapshot') {
+        setTitleStatus(null, watchStatus, sourceButton, { type: ref.ref.type, tmdbId: ref.ref.tmdbId });
+        return true;
+    }
+    return false;
+}
+
 function cardForRef(ref) {
     if (ref.key) {
         return document.querySelector(`.title-card[data-title-key="${CSS.escape(ref.key)}"]`);
@@ -2704,11 +2827,11 @@ function createMissingCatalogCard(entry) {
     card.dataset.watchStatus = entry.watch_status || '';
     const status = entry.watch_status || '';
     const priority = Number(entry.priority) || 0;
+    // 快照暂不支持批量状态操作：不渲染 batch-check 复选框，避免“可选但点开详情”的假象
     card.innerHTML = `
         <button class="card-main" type="button" aria-label="查看 ${escapeHtml(entry.title || '资料待补全')} 的保存记录">
             <div class="poster-wrap">
                 ${posterTextCover(entry.title || '资料待补全', '待补全')}
-                <span class="batch-check" aria-hidden="true"></span>
                 ${status ? `<span class="status-badge" data-status="${status}">${watchStatusNames[status]}</span>` : ''}
             </div>
             <div class="list-info">
@@ -2722,7 +2845,7 @@ function createMissingCatalogCard(entry) {
             </div>
         </button>
         <div class="status-menu-wrap">
-            <button class="status-menu-trigger ${status ? 'has-status' : ''}" type="button" aria-label="设置保存记录的状态" aria-haspopup="menu" aria-expanded="false">
+            <button class="status-menu-trigger ${status ? 'has-status' : ''}" type="button" data-status-menu-trigger aria-controls="${escapeHtml(statusMenuId('', key))}" aria-label="设置保存记录的状态" aria-haspopup="menu" aria-expanded="false">
                 ${bookmarkIcon(status)}
             </button>
             ${statusMenuHtml('', status, key)}
@@ -2733,6 +2856,8 @@ function createMissingCatalogCard(entry) {
 async function openMissingDetail(key) {
     const entry = state.snapshotEntries.get(key);
     if (!entry) return;
+    // R4-06：打开快照详情前收起可能残留的状态菜单
+    closeStatusMenus();
     state.activeMissingKey = key;
     state.activeDetailId = null;
     state.currentDetailIndex = -1;
@@ -2839,6 +2964,8 @@ async function removeMissingEntry(key, sourceButton) {
 function finalizeCloseModal() {
     const modal = document.getElementById('detail-modal');
     if (modal.classList.contains('hidden')) return;
+    // R4-06：父详情关闭时同步复位状态菜单（焦点随后交还 previousFocus）
+    closeStatusMenus();
     modal.classList.add('hidden');
     document.body.style.overflow = '';
     currentDetail = null;
@@ -2913,33 +3040,83 @@ function openDataStatus() {
 
 function renderDataStatusGrid() {
     const grid = document.getElementById('data-status-grid');
+    const detailsGrid = document.getElementById('data-status-details');
     if (!grid) return;
     const stats = statsData || {};
     const sync = syncStatusData?.latest_finished_sync || {};
     const ds = stats.ratings_dataset || {};
     const channels = stats.channels_verified || {};
+    const provider = stats.provider_check || {};
+    const zh = stats.zh_quality || {};
+    const total = Number(stats.total || 0);
+    // U06：先告诉用户“能不能用、哪里可能不完整”，数字放在原因后面
+    const summary = [];
+    if (!total) {
+        summary.push('内容库为空，可在管理菜单触发同步');
+    } else {
+        summary.push('可正常浏览');
+        const dsStale = ds.exists === false || Boolean(ds.stale);
+        if (dsStale) summary.push('新作品评分可能不完整');
+        if (sync.status === 'partial' || sync.status === 'failed') summary.push('最近一次同步未完全成功');
+    }
+
+    const zhUnknown = Number(zh.unknown || 0);
+    const zhMarked = Math.max(total - zhUnknown, 0);
+    const providerText = provider.never_checked != null
+        ? `近 30 天已核验 ${Number(provider.verified_recent || 0).toLocaleString()} 部`
+          + ` · 未核验 ${Number(provider.never_checked).toLocaleString()} 部`
+          + (Number(provider.checked_empty || 0) > 0 ? ` · 确认暂无渠道 ${Number(provider.checked_empty).toLocaleString()} 部` : '')
+          + (Number(provider.active_offer_titles || 0) > 0 ? ` · 有效渠道 ${Number(provider.active_offer_titles).toLocaleString()} 部` : '')
+        : (channels.total
+            ? `${Number(channels.done || 0).toLocaleString()} / ${Number(channels.total).toLocaleString()} 部有核验记录`
+            : '—');
+
     const rows = [
-        ['应用版本', stats.app_version ? `v${stats.app_version} · build ${stats.build_id || '—'}` : '未知'],
-        ['数据 schema', stats.schema_version != null ? `v${stats.schema_version}` : '未知'],
-        ['收录作品', `${Number(stats.total || 0).toLocaleString()} 部`],
+        ['当前状态', summary.join('；')],
+        ['收录作品', `${total.toLocaleString()} 部`],
         ['最近同步', sync.finished_at
             ? `${sync.status === 'partial' ? '部分成功' : sync.status === 'failed' ? '失败' : '成功'} · ${formatRelativeDate(new Date(sync.finished_at))}${sync.request_failed ? ` · 失败请求 ${Number(sync.request_failed).toLocaleString()}` : ''}`
             : '暂无记录'],
-        ['下次同步', syncStatusData?.next_run_time
-            ? new Date(syncStatusData.next_run_time).toLocaleString('zh-CN')
-            : '未启用'],
         ['评分库', ds.age_hours != null
-            ? `${Math.round(ds.age_hours)} 小时前${ds.stale ? ' · 可能漏掉新开分作品' : ''}`
+            ? `${formatAgeHours(ds.age_hours)}${ds.stale ? ' · 可能漏掉新开分作品' : ''}`
             : '缺失'],
-        ['片单待补全', `${Number(stats.library_pending || 0).toLocaleString()} 部`],
-        ['渠道核验', channels.total
-            ? `${Number(channels.done || 0).toLocaleString()} / ${Number(channels.total).toLocaleString()}`
+        ['渠道核验', providerText],
+        ['中文资料', zh.unknown != null
+            ? `已标注 ${zhMarked.toLocaleString()} 部 · 待回填 ${zhUnknown.toLocaleString()} 部`
             : '—'],
-        ['待处理队列', `${Number(stats.pending || 0).toLocaleString()} 条`],
+        ['片单待补全', `${Number(stats.library_pending || 0).toLocaleString()} 部`],
     ];
     grid.innerHTML = rows.map(([label, value]) => (
         `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`
     )).join('');
+
+    if (detailsGrid) {
+        const detailRows = [
+            ['应用版本', stats.app_version ? `v${stats.app_version} · build ${stats.build_id || '—'}` : '未知'],
+            ['数据 schema', stats.schema_version != null ? `v${stats.schema_version}` : '未知'],
+            ['下次同步', syncStatusData?.next_run_time
+                ? new Date(syncStatusData.next_run_time).toLocaleString('zh-CN')
+                : '未启用'],
+            ['数据更新时间', stats.last_synced_at
+                ? formatRelativeDate(new Date(stats.last_synced_at))
+                : '—'],
+            ['渠道核验总数', channels.total
+                ? `${Number(channels.done || 0).toLocaleString()} / ${Number(channels.total).toLocaleString()}`
+                : '—'],
+            ['待处理队列', `${Number(stats.pending || 0).toLocaleString()} 条`],
+        ];
+        detailsGrid.innerHTML = detailRows.map(([label, value]) => (
+            `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`
+        )).join('');
+    }
+}
+
+/* U06：超过 48 小时用天数表达，避免“958 小时前”难以换算 */
+function formatAgeHours(hours) {
+    const value = Number(hours);
+    if (!Number.isFinite(value)) return '未知';
+    if (value < 48) return `${Math.max(1, Math.round(value))} 小时前`;
+    return `约 ${Math.round(value / 24)} 天前`;
 }
 
 /* 移动端模态框下滑关闭手势（底部 sheet 模式） */
@@ -3294,14 +3471,61 @@ async function checkBootstrapSync() {
     }
 }
 
-function closeStatusMenus(except = null) {
+/* R4-06：状态菜单统一生命周期。卡片菜单与详情 split 菜单共用；
+ * 关闭动画的定时器按菜单记录，关闭后立刻重开时会先清掉旧定时器。 */
+const statusMenuHideTimers = new WeakMap();
+
+/* 通过 aria-controls/data-status-menu-trigger 找菜单对应触发器，回退到父容器查询 */
+function statusMenuTriggerFor(menu) {
+    if (!menu) return null;
+    if (menu.id) {
+        const linked = document.querySelector(`[data-status-menu-trigger][aria-controls="${menu.id}"]`);
+        if (linked) return linked;
+    }
+    return menu.parentElement?.querySelector('[data-status-menu-trigger]') || null;
+}
+
+function openStatusMenu(menu, trigger = null) {
+    if (!menu) return;
+    const button = trigger || statusMenuTriggerFor(menu);
+    closeStatusMenus(menu); // 一次只保留一个状态菜单
+    const pendingHide = statusMenuHideTimers.get(menu);
+    if (pendingHide) { clearTimeout(pendingHide); statusMenuHideTimers.delete(menu); }
+    menu.classList.remove('hidden');
+    button?.setAttribute('aria-expanded', 'true');
+    // 快速重开时旧关闭动画不能把新菜单隐藏：显式清除旧内联样式后再播放入场
+    menu.style.opacity = '0';
+    menu.style.transform = 'scale(.94) translateY(-4px)';
+    requestAnimationFrame(() => {
+        if (menu.classList.contains('hidden')) return;
+        menu.style.opacity = '';
+        menu.style.transform = '';
+    });
+    menu.querySelector('button.active, button')?.focus();
+}
+
+/* R4-06：关闭状态菜单。
+ * - except：切换另一个菜单时保留当前菜单；
+ * - restoreFocus=true（Escape/触发器收起）把焦点还给触发器；
+ * - 外部点击不主动抢焦点，但焦点若留在被关闭菜单内则回到触发器，避免隐藏元素持有焦点。 */
+function closeStatusMenus(except = null, options = {}) {
+    const { restoreFocus = false } = options;
     document.querySelectorAll('.status-menu:not(.hidden)').forEach(menu => {
         if (menu === except) return;
-        const trigger = menu.parentElement.querySelector('.status-menu-trigger');
+        const trigger = statusMenuTriggerFor(menu);
         trigger?.setAttribute('aria-expanded', 'false');
+        if (trigger && (restoreFocus || menu.contains(document.activeElement))) trigger.focus();
+        const pendingHide = statusMenuHideTimers.get(menu);
+        if (pendingHide) clearTimeout(pendingHide);
         menu.style.opacity = '0';
         menu.style.transform = 'scale(.94) translateY(-4px)';
-        setTimeout(() => { menu.classList.add('hidden'); menu.style.opacity = ''; menu.style.transform = ''; }, 140);
+        const timer = setTimeout(() => {
+            statusMenuHideTimers.delete(menu);
+            menu.classList.add('hidden');
+            menu.style.opacity = '';
+            menu.style.transform = '';
+        }, 140);
+        statusMenuHideTimers.set(menu, timer);
     });
 }
 
@@ -3363,6 +3587,16 @@ function setupFilterPopover() {
         event.stopPropagation();
         toggleFilterPopover();
     });
+}
+
+/* U04：桌面视口下“更多条件”强制展开，避免用户在手机收起后切换桌面无法展开 */
+function setupFilterMoreDetails() {
+    const details = document.querySelector('.filter-more-details');
+    if (!details || typeof window.matchMedia !== 'function') return;
+    const desktopQuery = window.matchMedia('(min-width: 901px)');
+    const sync = () => { if (desktopQuery.matches) details.open = true; };
+    desktopQuery.addEventListener?.('change', sync);
+    sync();
 }
 
 function closeSurpriseScopeMenu(restoreFocus = false) {
@@ -3455,7 +3689,7 @@ function setupEvents() {
         const cardMain = event.target.closest('.card-main');
         if (cardMain) {
             const card = cardMain.closest('.title-card');
-            // R01：目录缺失的个人条目打开快照详情
+            // R01：目录缺失的个人条目打开快照详情；快照暂不支持批量状态操作，批量模式下也直接打开详情
             if (card.dataset.titleKey) { openMissingDetail(card.dataset.titleKey); return; }
             // 批量模式下点击卡片改为选中/取消，不打开详情
             if (state.batchMode && state.section === 'library') {
@@ -3466,21 +3700,14 @@ function setupEvents() {
             return;
         }
 
-        const menuTrigger = event.target.closest('.status-menu-trigger');
+        // R4-06：卡片触发器与详情 split 触发器统一走 openStatusMenu/closeStatusMenus
+        const menuTrigger = event.target.closest('[data-status-menu-trigger]');
         if (menuTrigger) {
-            const menu = menuTrigger.parentElement.querySelector('.status-menu');
-            const opening = menu.classList.contains('hidden');
-            closeStatusMenus(menu);
-            if (opening) {
-                menu.style.opacity = '0';
-                menu.style.transform = 'scale(.94) translateY(-4px)';
-                menu.classList.remove('hidden');
-                requestAnimationFrame(() => { menu.style.opacity = ''; menu.style.transform = ''; });
-            } else {
-                menu.classList.add('hidden');
-            }
-            menuTrigger.setAttribute('aria-expanded', String(opening));
-            if (opening) menu.querySelector('button.active, button')?.focus();
+            const menu = document.getElementById(menuTrigger.getAttribute('aria-controls') || '')
+                || menuTrigger.parentElement?.querySelector('.status-menu');
+            if (!menu) return;
+            if (menu.classList.contains('hidden')) openStatusMenu(menu, menuTrigger);
+            else closeStatusMenus(null, { restoreFocus: true });
             return;
         }
 
@@ -3517,6 +3744,16 @@ function setupEvents() {
         if (action?.dataset.action === 'clear-filters') clearAllFilters();
         if (action?.dataset.action === 'reset-filters') { resetSectionFilters(); return; }
         if (action?.dataset.action === 'close-drawer') { window.__closeSidebar?.(); return; }
+        if (action?.dataset.action === 'toggle-regions') {
+            // U05：地区展开/收起（手机可点击，不再依赖 title tooltip）
+            const list = action.nextElementSibling;
+            if (!list) return;
+            const opening = list.classList.contains('hidden');
+            list.classList.toggle('hidden', !opening);
+            action.setAttribute('aria-expanded', String(opening));
+            action.textContent = opening ? '收起地区列表' : (action.dataset.label || '查看全部地区');
+            return;
+        }
         if (action?.dataset.action === 'apply-filters') {
             window.__closeSidebar?.(false);
             // N02：滚到主导航（而不是内容网格），保证 tab 与子 tab 不被顶栏遮住
@@ -3524,13 +3761,12 @@ function setupEvents() {
             return;
         }
         if (action?.dataset.action === 'toggle-status-menu') {
-            const menu = action.parentElement?.querySelector('.status-menu');
-            if (menu) {
-                const opening = menu.classList.contains('hidden');
-                menu.classList.toggle('hidden', !opening);
-                action.setAttribute('aria-expanded', String(opening));
-                if (opening) menu.querySelector('button')?.focus();
-            }
+            // 兜底路径（正常点击已由 data-status-menu-trigger 分支处理），保持同一生命周期
+            const menu = document.getElementById(action.getAttribute('aria-controls') || '')
+                || action.parentElement?.querySelector('.status-menu');
+            if (!menu) return;
+            if (menu.classList.contains('hidden')) openStatusMenu(menu, action);
+            else closeStatusMenus(null, { restoreFocus: true });
             return;
         }
         if (action?.dataset.action === 'detail-prev') { navigateDetail(-1); return; }
@@ -3538,12 +3774,18 @@ function setupEvents() {
         if (action?.dataset.action === 'goto-discover') { setSection('discover'); return; }
         if (action?.dataset.action === 'surprise-again') { surprisePick(); return; }
         if (action?.dataset.action === 'surprise-tonight') {
-            if (state.surpriseLastId != null) setTitleStatus(state.surpriseLastId, 'watching');
+            // R4-05：统一走 TitleRef 写入；快照走 watchlist 身份接口，无身份时给中文提示
+            const ref = state.surpriseLastRef
+                || (state.surpriseLastId != null ? getTitleRef({ id: state.surpriseLastId }) : null);
+            if (!ref || !setTitleStatusByRef(ref, 'watching')) {
+                showToast('当前随机结果无法写入片单状态，请重新抽选', 'warn');
+            }
             return;
         }
         if (action?.dataset.action === 'surprise-close') { hideSurpriseBar(); return; }
         if (action?.dataset.action === 'batch-select-all') {
             const cap = 200;
+            // 快照暂不支持批量状态操作：全选只覆盖目录 id（loadedTitleIds 从不含快照）
             const candidates = state.loadedTitleIds.map(Number);
             state.selectedIds = new Set(candidates.slice(0, cap));
             if (candidates.length > cap) {
@@ -3672,6 +3914,18 @@ function setupEvents() {
 
     document.addEventListener('keydown', event => {
         if (event.isComposing) return;
+        // R4-06：状态菜单声明了 role=menu，补最小方向键行为（Home/End），不破坏 Tab/Escape 焦点协议
+        const statusMenuItem = event.target.closest?.('.status-menu [role="menuitem"]');
+        if (statusMenuItem && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+            event.preventDefault();
+            const items = [...statusMenuItem.closest('.status-menu').querySelectorAll('[role="menuitem"]')];
+            const index = items.indexOf(statusMenuItem);
+            if (event.key === 'ArrowDown') items[(index + 1) % items.length]?.focus();
+            else if (event.key === 'ArrowUp') items[(index - 1 + items.length) % items.length]?.focus();
+            else if (event.key === 'Home') items[0]?.focus();
+            else items[items.length - 1]?.focus();
+            return;
+        }
         const modalOpen = !document.getElementById('detail-modal').classList.contains('hidden');
         const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
         const shortcutsOpen = !document.getElementById('shortcuts-overlay')?.classList.contains('hidden');
@@ -3696,7 +3950,8 @@ function setupEvents() {
             if (!document.getElementById('fresh-menu')?.classList.contains('hidden')) { closeFreshMenu(true); return; }
             if (!document.getElementById('filter-popover')?.classList.contains('hidden')) { closeFilterPopover(true); return; }
             if (!document.getElementById('surprise-scope-menu')?.classList.contains('hidden')) { closeSurpriseScopeMenu(true); return; }
-            if (document.querySelector('.status-menu:not(.hidden)')) closeStatusMenus();
+            // R4-06：Escape 关闭状态菜单时把焦点还给对应触发器
+            if (document.querySelector('.status-menu:not(.hidden)')) closeStatusMenus(null, { restoreFocus: true });
             else closeModal();
         }
         // 海报墙锁屏开关 W
