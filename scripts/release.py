@@ -145,6 +145,13 @@ def main():
         print(f"version={version} build_id={build_id} asset_version={asset_version} "
               f"(index={'updated' if index_changed else 'unchanged'}, "
               f"sw={'updated' if sw_changed else 'unchanged'})")
+    else:
+        # 只核对时以 data/version.json 里记录的已发布版本为准，而不是当前 HEAD
+        released = _read_json(VERSION_FILE)
+        if released.get("app_version"):
+            version = str(released["app_version"])
+        if released.get("asset_version"):
+            asset_version = str(released["asset_version"])
 
     if args.check_url:
         if not check_deployment(args.check_url, version, asset_version):
