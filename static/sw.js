@@ -8,7 +8,7 @@
  * 发布新版本时同时更新 SW_VERSION 与 SHELL_ASSETS 中的 ?v= 版本号，
  * 保持 HTML/CSS/JS 同版预缓存。
  */
-const SW_VERSION = '90def2d';
+const SW_VERSION = 'e6f41c6';
 const SHELL_CACHE = `stream-shell-${SW_VERSION}`;
 const DATA_CACHE = `stream-data-${SW_VERSION}`;
 const CACHE_PREFIX = 'stream-';
@@ -19,8 +19,8 @@ const SHELL_ASSETS = [
     '/static/icon.svg',
     '/static/icon-192.png',
     '/static/icon-512.png',
-    '/static/css/style.css?v=90def2d',
-    '/static/js/app.js?v=90def2d',
+    '/static/css/style.css?v=e6f41c6',
+    '/static/js/app.js?v=e6f41c6',
 ];
 
 self.addEventListener('install', event => {
