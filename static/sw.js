@@ -16,7 +16,7 @@
  * 发布新版本时同时更新 SW_VERSION 与外壳资源清单中的 ?v= 版本号，
  * 保持 HTML/CSS/JS 同版预缓存。
  */
-const SW_VERSION = 'e6f41c6';
+const SW_VERSION = '1ff462c';
 const SHELL_CACHE = `stream-shell-${SW_VERSION}`;
 const DATA_CACHE = `stream-data-${SW_VERSION}`;
 const CACHE_PREFIX = 'stream-';
@@ -24,8 +24,8 @@ const DATA_CACHE_MAX = 40;
 /* 核心外壳：任一失败都不提交新版本（提交 = skipWaiting） */
 const CORE_SHELL_ASSETS = [
     '/',
-    '/static/css/style.css?v=e6f41c6',
-    '/static/js/app.js?v=e6f41c6',
+    '/static/css/style.css?v=1ff462c',
+    '/static/js/app.js?v=1ff462c',
 ];
 /* 可选外壳：manifest 与图标 best-effort，失败只记录 */
 const OPTIONAL_SHELL_ASSETS = [
