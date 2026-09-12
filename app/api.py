@@ -5,20 +5,24 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
+from app.config import APP_VERSION, BUILD_ID, SCHEMA_VERSION, SYNC_ENABLED, TMDB_API_KEY
 from app.db import (
     check_database,
     export_watchlist,
+    get_preference_detail,
     get_recent_releases,
     get_stats,
     get_title_detail,
     get_titles,
     import_watchlist,
+    persist_sync_batch,
+    update_preference_by_identity,
+    update_status_by_identity,
     update_title_preference,
     update_title_status,
     update_titles_batch,
 )
 from app.related import get_related_titles_async
-from app.config import SYNC_ENABLED, TMDB_API_KEY
 from app.scheduler import get_scheduler_status
 from app.importer import TitleImportError, import_title_by_imdb
 from app.sync import get_sync_state, sync_new_titles
@@ -117,6 +121,9 @@ async def ready(request: Request, response: Response):
     return {
         "status": status,
         "issues": issues,
+        "app_version": APP_VERSION,
+        "build_id": BUILD_ID,
+        "schema_version": SCHEMA_VERSION,
         "total": stats["total"] if stats else 0,
         "last_update": last_update,
         "last_synced_at": last_synced_at,
@@ -138,8 +145,10 @@ def list_titles(
     region: str = Query(None, pattern="^[A-Za-z]{2}$"),
     min_rating: float = Query(None, ge=0, le=10),
     watch_status: str = Query(None, pattern="^(watchlist|watching|watched)?$"),
-    genre: str = Query(None, max_length=40),
+    genre: list[str] | None = Query(None, max_length=20),
     max_runtime: int = Query(None, ge=30, le=500),
+    year_from: int | None = Query(None, ge=1900, le=2100),
+    year_to: int | None = Query(None, ge=1900, le=2100),
     exclude_watched: bool = Query(False),
     released_after: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
@@ -148,6 +157,7 @@ def list_titles(
         sort_by=sort_by, order=order, title_type=title_type,
         search=search, region=region, min_rating=min_rating,
         watch_status=watch_status, genre=genre, max_runtime=max_runtime,
+        year_from=year_from, year_to=year_to,
         exclude_watched=exclude_watched, released_after=released_after,
     )
 
@@ -191,27 +201,125 @@ async def get_related(title_id: int, limit: int = Query(12, ge=1, le=24)):
 @router.get("/api/watchlist/export")
 def export_list():
     items = export_watchlist()
-    return {"schema_version": 1, "exported_at": datetime.now(timezone.utc).isoformat(),
+    return {"schema_version": 2, "exported_at": datetime.now(timezone.utc).isoformat(),
             "count": len(items), "items": items}
 
 
 class WatchlistImportRequest(BaseModel):
     items: list = Field(default_factory=list, max_length=5000)
+    schema_version: int = Field(1, ge=1, le=99)
+    dry_run: bool = False
+    force: bool = False
 
 
 @router.post("/api/watchlist/import")
 def import_list(payload: WatchlistImportRequest):
     try:
-        result = import_watchlist(payload.items)
+        result = import_watchlist(
+            payload.items,
+            schema_version=payload.schema_version,
+            dry_run=payload.dry_run,
+            force=payload.force,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"schema_version": 1, **result}
+    return result
+
+
+@router.get("/api/watchlist/{media_type}/{tmdb_id}")
+def watchlist_entry(media_type: str, tmdb_id: int):
+    """按身份读取个人条目：目录缺失时也能查看保存记录。"""
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=422, detail="type 必须是 movie 或 tv")
+    entry = get_preference_detail(media_type, tmdb_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="条目不在片单中")
+    return entry
+
+
+@router.patch("/api/watchlist/{media_type}/{tmdb_id}/status")
+def set_watchlist_entry_status(media_type: str, tmdb_id: int, payload: WatchStatusUpdate):
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=422, detail="type 必须是 movie 或 tv")
+    entry = update_status_by_identity(media_type, tmdb_id, payload.watch_status)
+    if entry is None and payload.watch_status:
+        raise HTTPException(status_code=404, detail="条目不在片单中")
+    # 移除成功时条目已不存在，返回明确的成功响应而不是 404
+    return entry if entry is not None else {"removed": True, "tmdb_id": tmdb_id, "type": media_type}
+
+
+@router.patch("/api/watchlist/{media_type}/{tmdb_id}/preference")
+def set_watchlist_entry_preference(media_type: str, tmdb_id: int, payload: PreferenceUpdate):
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=422, detail="type 必须是 movie 或 tv")
+    entry = update_preference_by_identity(
+        media_type, tmdb_id,
+        priority=payload.priority,
+        note=payload.note,
+        personal_rating=payload.personal_rating,
+    )
+    if not entry:
+        raise HTTPException(status_code=404, detail="条目不在片单中")
+    return entry
+
+
+@router.post("/api/watchlist/{media_type}/{tmdb_id}/refresh")
+async def refresh_watchlist_entry(media_type: str, tmdb_id: int):
+    """目录缺失时显式重试补全：从 TMDB 拉取详情并尝试入目录，不改动个人数据。"""
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=422, detail="type 必须是 movie 或 tv")
+    if not TMDB_API_KEY:
+        raise HTTPException(status_code=400, detail={
+            "code": "missing_tmdb_api_key",
+            "message": "未配置 TMDB_API_KEY，无法补全资料",
+        })
+    entry = await asyncio.to_thread(get_preference_detail, media_type, tmdb_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="条目不在片单中")
+    if entry.get("catalog_available"):
+        entry["status"] = "ready"
+        return entry
+
+    from app.fetcher import enrich_titles
+
+    candidate = {
+        "tmdb_id": tmdb_id,
+        "type": media_type,
+        "title": entry.get("title") or "",
+        "original_title": entry.get("original_title") or "",
+        "overview": "",
+        "release_date": entry.get("release_date") or "",
+        "poster_url": None,
+        "imdb_id": entry.get("imdb_id") or "",
+        "providers": [],
+        "provider_regions": {},
+        "provider_labels": {},
+        "origin_countries": [],
+    }
+    try:
+        enriched = await enrich_titles([candidate])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail={
+            "code": "external_request_failed",
+            "message": f"TMDB 请求失败：{exc}",
+        }) from exc
+    qualified = enriched.get("titles") or []
+    pending = enriched.get("pending") or []
+    if qualified or pending:
+        await asyncio.to_thread(persist_sync_batch, qualified, pending)
+    entry = await asyncio.to_thread(get_preference_detail, media_type, tmdb_id)
+    if entry.get("catalog_available"):
+        entry["status"] = "completed"
+        return entry
+    entry["status"] = "pending"
+    entry["pending_reason"] = (pending[0].get("pending_reason") if pending else None)
+    return entry
 
 
 @router.get("/api/releases")
-def recent_releases(days: int = Query(14, ge=1, le=90), limit: int = Query(50, ge=1, le=100)):
-    titles = get_recent_releases(days=days, limit=limit)
-    return {"days": days, "total": len(titles), "titles": titles}
+def recent_releases(days: int = Query(14, ge=1, le=90), limit: int = Query(50, ge=1, le=100),
+                    page: int = Query(1, ge=1)):
+    return get_recent_releases(days=days, limit=limit, page=page)
 
 
 @router.patch("/api/titles/{title_id}/status")
@@ -252,6 +360,9 @@ def batch_update_titles(payload: BatchUpdate):
 @router.get("/api/stats")
 def stats():
     result = get_stats()
+    result["app_version"] = APP_VERSION
+    result["build_id"] = BUILD_ID
+    result["schema_version"] = SCHEMA_VERSION
     try:
         from app.imdb_data import dataset_status
         result["ratings_dataset"] = dataset_status()

@@ -26,8 +26,9 @@ import httpx
 
 from app.config import TMDB_API_KEY
 from app.db import get_db_connection, init_db
+from app.db.preferences import write_provider_offers
 from app.db.utils import _utc_now
-from app.fetcher.common import _provider_availability
+from app.fetcher.common import _provider_availability, _provider_offers
 from app.fetcher.tmdb import fetch_tmdb
 
 logger = logging.getLogger("channels-backfill")
@@ -56,6 +57,10 @@ def _load_candidates(limit=0, newest_first=False):
                       SELECT 1 FROM title_provider_availability a
                       WHERE a.title_id = t.id AND a.is_active = 1
                   )
+                  OR EXISTS (
+                      SELECT 1 FROM title_watch_offers o
+                      WHERE o.title_id = t.id AND o.is_active = 1 AND o.provider_id = 0
+                  )
               )
             ORDER BY {order}
         """
@@ -68,7 +73,7 @@ def _load_candidates(limit=0, newest_first=False):
         conn.close()
 
 
-def _save_channels(title_id, providers, regions, labels, observed_at):
+def _save_channels(title_id, providers, regions, labels, observed_at, offers=None):
     """单片核验成功后写入渠道：upsert 本次命中行，并把未出现的活跃行标记失效。
     空结果同样会停用该片所有活跃渠道并记录检查时间（30 天内不重复请求）。"""
     conn = get_db_connection()
@@ -120,6 +125,13 @@ def _save_channels(title_id, providers, regions, labels, observed_at):
                 SET is_active = 0
                 WHERE title_id = ? AND is_active = 1
             """, (title_id,))
+        # R02：成功核验后同步重建逐地区 offer 的否定结论
+        if offers is not None:
+            cursor.execute("""
+                UPDATE title_watch_offers SET is_active = 0
+                WHERE title_id = ? AND is_active = 1
+            """, (title_id,))
+            touched += write_provider_offers(cursor, title_id, offers, observed_at)
         cursor.execute(
             "UPDATE titles SET providers_checked_at = ? WHERE id = ?",
             (observed_at, title_id),
@@ -138,11 +150,13 @@ async def _resolve_one(row, client, semaphore):
         endpoint = f"/{'movie' if row['type'] == 'movie' else 'tv'}/{row['tmdb_id']}/watch/providers"
         payload = await fetch_tmdb(endpoint, {"language": "en-US"}, client=client)
     providers, regions, labels = _provider_availability(payload or {})
+    offers = _provider_offers(payload or {})
     return {
         "id": row["id"],
         "providers": providers,
         "regions": regions,
         "labels": labels,
+        "offers": offers,
     }
 
 
@@ -181,7 +195,7 @@ async def run(limit=0, concurrency=5, dry_run=False, newest_first=False):
                     # 成功核验（含空结果）：upsert 命中行 + 停用本次未出现的行
                     stats["rows"] += await asyncio.to_thread(
                         _save_channels, result["id"], result["providers"],
-                        result["regions"], result["labels"], _utc_now(),
+                        result["regions"], result["labels"], _utc_now(), result.get("offers"),
                     )
             logger.info(
                 "progress %s/%s rows=%s empty=%s failed=%s",

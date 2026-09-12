@@ -1,11 +1,14 @@
 """作品数据写入与缓存读取：插入/更新、IMDb ID 回填、缓存查询、国家回填。"""
 
+import json
 from datetime import date
 
 from app.config import NEW_TITLE_GRACE_DAYS
 from app.db.connection import get_db_connection
+from app.db.preferences import write_provider_offers
 from app.db.queries import _fetch_country_map
 from app.db.utils import _has_chinese, _normalize_country_codes, _normalize_rating_source, _utc_now
+from app.genres import normalize_genres
 
 
 def update_title_imdb_id(title_id, imdb_id):
@@ -31,6 +34,14 @@ def insert_title(title_data, conn=None):
         conn = get_db_connection()
     cursor = conn.cursor()
     rating, rating_source, rating_votes = _normalize_rating_source(title_data)
+    genres_json = title_data.get("genres_json")
+    if genres_json:
+        try:
+            parsed_genres = json.loads(genres_json)
+        except (TypeError, ValueError):
+            parsed_genres = None
+        if isinstance(parsed_genres, list):
+            genres_json = json.dumps(normalize_genres(parsed_genres), ensure_ascii=False)
     countries_supplied = "origin_countries" in title_data
     country_codes = _normalize_country_codes(title_data.get("origin_countries"))
     countries_synced_at = title_data.get("countries_synced_at")
@@ -79,9 +90,11 @@ def insert_title(title_data, conn=None):
                     last_seen_at=?, last_synced_at=?,
                     countries_synced_at=COALESCE(?, countries_synced_at),
                     has_zh=COALESCE(?, has_zh),
+                    zh_quality=COALESCE(?, zh_quality),
                     director=COALESCE(NULLIF(?, ''), director),
                     cast_json=COALESCE(?, cast_json),
                     genres_json=COALESCE(?, genres_json),
+                    overview_cjk_ratio=COALESCE(?, overview_cjk_ratio),
                     runtime=COALESCE(?, runtime),
                     seasons=COALESCE(?, seasons),
                     episodes=COALESCE(?, episodes),
@@ -98,9 +111,11 @@ def insert_title(title_data, conn=None):
                 title_data.get("last_synced_at") or _utc_now(),
                 countries_synced_at,
                 has_zh,
+                title_data.get("zh_quality"),
                 title_data.get("director"),
                 title_data.get("cast_json"),
-                title_data.get("genres_json"),
+                genres_json,
+                title_data.get("overview_cjk_ratio"),
                 title_data.get("runtime"),
                 title_data.get("seasons"),
                 title_data.get("episodes"),
@@ -114,8 +129,9 @@ def insert_title(title_data, conn=None):
                 (tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                  poster_url, imdb_rating, rating_source, rating_votes, added_date,
                  first_seen_at, last_seen_at, last_synced_at, countries_synced_at,
-                 has_zh, director, cast_json, genres_json, runtime, seasons, episodes, trailer_key)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 has_zh, zh_quality, director, cast_json, genres_json, overview_cjk_ratio,
+                 runtime, seasons, episodes, trailer_key)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 title_data["tmdb_id"], title_data.get("imdb_id"), title_data["title"],
                 title_data.get("original_title"), title_data["type"],
@@ -127,9 +143,11 @@ def insert_title(title_data, conn=None):
                 title_data.get("last_synced_at") or _utc_now(),
                 countries_synced_at,
                 has_zh,
+                title_data.get("zh_quality"),
                 title_data.get("director"),
                 title_data.get("cast_json"),
-                title_data.get("genres_json"),
+                genres_json,
+                title_data.get("overview_cjk_ratio"),
                 title_data.get("runtime"),
                 title_data.get("seasons"),
                 title_data.get("episodes"),
@@ -161,6 +179,9 @@ def insert_title(title_data, conn=None):
                         provider_label=COALESCE(NULLIF(excluded.provider_label, ''),
                             title_provider_availability.provider_label)
                 """, (title_id, provider, region, observed_at, observed_at, label))
+
+        # R02：逐地区 offer 独立落库（真实平台 ID/名称 × 地区 × 观看方式）。
+        write_provider_offers(cursor, title_id, title_data.get("provider_offers"), observed_at)
 
         if countries_supplied:
             cursor.execute("DELETE FROM title_countries WHERE title_id=?", (title_id,))

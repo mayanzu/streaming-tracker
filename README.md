@@ -25,38 +25,63 @@ docker compose up -d --build
 | `SYNC_ENABLED` | `true`（代码默认） | compose 默认 `false`：部署不自动同步，本地运行默认开启。两处不一致是刻意的：本地首次运行需要建库，部署由外部调度触发 |
 | `DATABASE_URL` | `data/tracker.db` | SQLite 路径；测试用临时文件覆盖此变量 |
 | `MIN_IMDB_VOTES` / `MIN_IMDB_VOTES_GRACE` | `1000` / `20` | 可信评分票数门槛；宽限期内（`NEW_TITLE_GRACE_DAYS`，默认 30 天）新片用宽松门槛 |
+| `RATING_PRIOR_VOTES` / `RATING_PRIOR_MEAN` | `3000` / `7.5` | IMDb Top 250 同款贝叶斯加权先验；只影响“评分最高”排序，展示仍是原始分；`RATING_PRIOR_VOTES=0` 退化为原始分排序 |
+| `TRANSLATE_PROVIDER` | `google` | 中文翻译源：`google` / `deepl` / `none`；`none` 时不翻译并把 zh_quality 标为 none |
+| `DEEPL_API_KEY` | 空 | `TRANSLATE_PROVIDER=deepl` 时必填 |
 | `TRACKER_DATA_DIR` | `./data` | compose 数据卷宿主机目录 |
+
+## 界面约定
+
+- 发现页默认按加权评分排序（“高分精选”= 评分 7.5+ 的加权排序）；“近期新片”支持 30 / 90 / 180 天窗口；
+  原“近期上映”一级 tab 已并入该模式，旧链接 `?view=releases` 会自动重定向为近 30 天新片。
+- 题材筛选来自数据（`/api/stats.genres`），按作品数排序、支持多选（并集）；英文剧集题材会归并为中文
+  （如 `Sci-Fi & Fantasy` → 科幻 / 奇幻），旧数据可用 `python -m app.backfill_genres` 回填。
+- 年代筛选（2020 年代 / 2010 年代 / 更早）与「筛选」弹出面板在桌面共用，手机端为底部抽屉。
+- 管理菜单 → “数据状态”提供应用内面板：版本、最近/下次同步、评分库时效、渠道核验进度、待处理队列；
+  原始 JSON 仍保留在 `/ready`。
 
 ## 数据来源
 
 - 作品元数据：TMDB；评分：IMDb（含 OMDb 回填）。
-- 观看渠道：TMDB 观看信息聚合，**只在作品详情中展示**（列表不再按平台筛选）。
-  六大主流平台显示中文品牌名；其他平台显示具体名称（如 MUBI、爱奇艺），
-  附覆盖地区与最近核验时间。历史数据的具体名称会在下次同步命中同一渠道时自动回填，
-  回填前显示“其他平台”。TMDB 观看指南链接仅作指南，不拼凑平台直达链接。
+- 中文资料质量：详情页区分“已补全 / 简介机器翻译 / 仅片名中文 / 暂无中文”，
+  旧数据没有质量标记时按未标注处理，下次同步或回填后补全。
+- 观看渠道：TMDB 观看信息按「平台 × 地区 × 观看方式」逐条存储，**只在作品详情中展示**（列表不按平台筛选）。
+  六大主流平台显示中文品牌名；其他平台显示具体名称（如 MUBI、爱奇艺）。
+  选择观看地区后只展示该地区已核验的 offer；历史遗留数据无法还原跨地区对应关系，
+  会标注“待重新核验”，重新核验后自动替换。TMDB 观看指南链接仅作指南，不拼凑平台直达链接。
 
 ## 备份与恢复
 
-- 顶部“导出片单”下载 JSON（含 `schema_version`、稳定 identity `tmdb_id + type` 与作品快照）。
-- “恢复片单”选择备份文件：先预览新增 / 已存在 / 无效条目，确认后按 identity 幂等合并，可重复执行。偏好独立于作品表存储，重建目录不会丢失片单。
+- 顶部“导出片单”下载 JSON（`schema_version: 2`，含稳定 identity `tmdb_id + type`、个人记录与作品快照）。
+- “恢复片单”选择备份文件：后端统一校验并预览新增 / 更新 / 无变化 / 保护较新记录 / 无效 / 重复，
+  确认后按 identity 幂等合并，可重复执行。默认保留本地较新的个人记录，可选择以备份覆盖。
+  目录缺失的条目会先恢复个人记录并显示“资料待补全”，补全 TMDB 资料后自动关联，不会丢失。
 - SQLite 在线备份建议用 `sqlite3 data/tracker.db ".backup 'tracker-backup.db'"`，恢复前先停服务并演练一次。
 
 ## 常见故障
 
 | 现象 | 处理 |
 |---|---|
-| 平台筛选显示失败 | 基础平台入口仍可用，点“重试”单独恢复；不影响主列表 |
 | 详情打不开 | 点“重新加载”会发新请求；hover 预取失败不会阻断点击 |
 | 片单数量刚改又变回去 | 已修统计缓存失效；若复现请附 `PATCH` 与 `GET /api/stats` 顺序提 issue |
+| 片单出现“资料待补全” | 该条目所属作品暂不在目录中；个人记录已保存，可在卡片中重试补全或移除 |
 | 首屏无内容 | 空库且同步中会提示“正在建立内容库”并自动刷新；同步禁用时需手动触发或导入 |
+| 离线/服务不可达时数据偏旧 | 页面会提示数据来自缓存及获取时间；恢复联网后自动重取当前列表 |
 
 ## 回归测试
 
 ```bash
-.venv/Scripts/python tests/test_review_regressions.py
+python -m pytest tests/test_review_regressions.py -q
+# 无 pytest 时也可直接运行（内置 __main__ 收集器）
+python tests/test_review_regressions.py
 ```
 
-覆盖：片单计数与列表一致、统计缓存失效、过期收藏可访问/可移除、备份恢复往返、题材/时长筛选、搜索精确优先、隐藏已看、近期新片、个人记录、批量操作。前端改动用 `node --check static/js/app.js` 校验。
+覆盖：片单计数与列表一致、统计缓存失效、过期收藏可访问/可移除、空目录恢复与快照往返、
+导入计数与本地记录保护、备份恢复往返、逐地区观看 offer 隔离与核验否定、
+题材/时长/年代筛选与题材别名并集、加权评分排序、推荐打分多样性与无外网快速返回、
+IMDb 精确检索、近期上映时间边界、隐藏已看、近期新片、个人记录、批量操作、
+中文资料质量标注与 CJK 占比判断。前端改动用 `node --check static/js/app.js` 与
+`node --check static/sw.js` 校验；样式改动用 `python scripts/check_css_tokens.py` 守门。
 
 ## 性能基线
 
@@ -69,6 +94,8 @@ python scripts/bench_api.py --base-url http://127.0.0.1:8000 --iterations 20 \
 结果记录在 `docs/benchmarks/`，包含各端点 p50 / p95 / 均值 / 最大值。
 列表接口的过滤总数带 60 秒进程内缓存（写入时失效），首次请求约 80–115ms，
 缓存命中后约 10ms；变更后端查询后建议重跑一次对比。
+“评分最高”排序使用表达式索引 `idx_titles_weighted_rating`（启动时自动创建，
+`RATING_PRIOR_VOTES/MEAN` 变化时自动重建），评分排序不再做全表扫描 + 临时排序。
 
 ## 渠道核验与回填
 
@@ -87,3 +114,39 @@ python -m app.backfill_channels --limit 500 --concurrency 5 --newest-first
 - 无论是否命中渠道都记录 `providers_checked_at`（空结果 30 天内不重复请求）；
 - 候选集同时覆盖“未标注渠道”和“已无活跃渠道（可能被旧策略误停用）”的作品。
   本库当前约 2 万条候选、其中约 858 部零活跃渠道，可分批执行或挂 cron。
+- 定时任务已接入：每夜同步后一小时自动回填 500 部（`providers_checked_at` 缺失或超过 45 天）。
+
+## 数据回填与维护
+
+```bash
+# 中文资料质量标记（zh_quality / overview_cjk_ratio）
+python -m app.backfill_zh_quality [--dry-run]
+
+# 无中文片名 / 中英混排简介重译（遵守 TRANSLATE_PROVIDER；none 时只标注）
+python -m app.backfill_translations --titles --overviews --concurrency 4
+
+# 英文题材名归并为中文规范值
+python -m app.backfill_genres [--dry-run]
+
+# 日志与无界数据清理（availability 删除前会校验可见作品数不变）
+python -m app.maintenance prune-errors
+python -m app.maintenance prune-pending --days 180 --dry-run
+python -m app.maintenance prune-availability --dry-run
+python -m app.maintenance vacuum          # 需停服务
+
+# CSS 设计令牌守门（新增裸色值/字号会失败；清理完成后可 --update-baseline）
+python scripts/check_css_tokens.py
+```
+
+## 发布
+
+```bash
+# 同步 index.html / sw.js 的资源版本号，写入 data/version.json（/ready、/api/stats 会暴露）
+python scripts/release.py
+
+# 部署完成后核对线上版本（对比 /ready.app_version、/sw.js、首页资源版本）
+python scripts/release.py --check-only --check-url http://192.168.31.3:8000
+```
+
+`scripts/release.py` 默认以 `APP_VERSION` 环境变量或现有 `data/version.json` 的版本号发布，
+用 git short sha 作为 build id 与资源版本；三条核对全部 PASS 才算发布完成。

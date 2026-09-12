@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -9,6 +10,26 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 STATIC_DIR = BASE_DIR / "static"
+
+
+def _release_metadata():
+    """发布脚本写入的 data/version.json；不存在时返回空值走默认。"""
+    try:
+        payload = json.loads((DATA_DIR / "version.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "", ""
+    return (
+        str(payload.get("app_version") or "").strip(),
+        str(payload.get("build_id") or "").strip(),
+    )
+
+
+_released_version, _released_build = _release_metadata()
+
+# 发布版本：/ready 与 /api/stats 暴露，便于确认部署版本与数据 schema 是否同版
+APP_VERSION = os.getenv("APP_VERSION", "").strip() or _released_version or "1.1.0"
+BUILD_ID = os.getenv("BUILD_ID", "").strip() or _released_build or APP_VERSION
+SCHEMA_VERSION = 3
 
 # TMDB API配置
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
@@ -75,6 +96,15 @@ ALL_PROVIDER_WATCH_REGIONS = tuple(
     for region in _all_provider_regions.split(",")
     if region.strip()
 ) or CHINESE_FOCUSED_REGIONS
+
+# 加权评分（IMDb Top 250 同款贝叶斯先验）：只影响排序，不影响展示的原始分
+RATING_PRIOR_VOTES = max(0, int(os.getenv("RATING_PRIOR_VOTES", "3000")))
+RATING_PRIOR_MEAN = float(os.getenv("RATING_PRIOR_MEAN", "7.5"))
+
+# 翻译源：google（默认）| deepl | none；none 时不翻译并在前端展示原文标签
+TRANSLATE_PROVIDER = os.getenv("TRANSLATE_PROVIDER", "google").strip().lower() or "google"
+DEEPL_API_KEY = os.getenv("DEEPL_API_KEY", "").strip()
+DEEPL_API_URL = os.getenv("DEEPL_API_URL", "https://api-free.deepl.com/v2/translate").strip()
 
 # 评分和抓取策略
 MIN_IMDB_RATING = float(os.getenv("MIN_IMDB_RATING", "7.0"))

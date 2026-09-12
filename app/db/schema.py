@@ -50,9 +50,11 @@ def init_db():
             "last_seen_at": "TEXT",
             "countries_synced_at": "TEXT",
             "has_zh": "INTEGER",
+            "zh_quality": "TEXT",
             "director": "TEXT",
             "cast_json": "TEXT",
             "genres_json": "TEXT",
+            "overview_cjk_ratio": "REAL",
             "runtime": "INTEGER",
             "seasons": "INTEGER",
             "episodes": "INTEGER",
@@ -164,6 +166,56 @@ def init_db():
         },
     )
 
+    # R01：偏好快照。个人片单以 preferences 为主表，目录缺失时用快照展示与恢复，
+    # 快照不是 TMDB 当前目录的权威副本，也不赋予评分/可见性准入资格。
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS title_preference_snapshots (
+            tmdb_id INTEGER NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('movie', 'tv')),
+            title TEXT,
+            original_title TEXT,
+            imdb_id TEXT,
+            poster_url TEXT,
+            release_date TEXT,
+            snapshot_updated_at TEXT NOT NULL,
+            PRIMARY KEY (tmdb_id, type)
+        )
+    """)
+    # 迁移：为已有偏好补入目录快照；INSERT OR IGNORE 保证重复执行幂等。
+    cursor.execute("""
+        INSERT OR IGNORE INTO title_preference_snapshots
+            (tmdb_id, type, title, original_title, imdb_id, poster_url,
+             release_date, snapshot_updated_at)
+        SELECT p.tmdb_id, p.type, t.title, t.original_title, t.imdb_id,
+               t.poster_url, t.release_date, ?
+        FROM title_preferences p
+        JOIN titles t ON t.tmdb_id = p.tmdb_id AND t.type = p.type
+        WHERE t.title IS NOT NULL
+    """, (now,))
+
+    # R02：逐地区观看 offer。真实平台 ID/名称、地区、观看方式与核验时间分开存储，
+    # 避免跨地区名称被合并成不可拆解的字符串。表内只保存成功核验的结构化数据；
+    # 历史合并数据由 provider_details 兼容展示并在下次核验时重取，不做猜测性迁移。
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS title_watch_offers (
+            title_id INTEGER NOT NULL,
+            provider_id INTEGER NOT NULL DEFAULT 0,
+            provider_group TEXT NOT NULL DEFAULT 'others',
+            provider_name TEXT NOT NULL,
+            region TEXT NOT NULL DEFAULT '',
+            monetization TEXT NOT NULL DEFAULT 'flatrate',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (title_id) REFERENCES titles(id) ON DELETE CASCADE,
+            UNIQUE(title_id, provider_id, provider_name, region, monetization)
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_watch_offers_title_active
+        ON title_watch_offers(title_id, is_active, provider_id)
+    """)
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sync_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -228,6 +280,7 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_type ON titles(type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_added_date ON titles(added_date)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_release_date ON titles(release_date)")
+    _ensure_weighted_rating_index(cursor)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_preferences_status ON title_preferences(watch_status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs(started_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pending_retry ON pending_titles(next_retry_at)")
@@ -296,6 +349,8 @@ def _ensure_title_identity_schema(conn, cursor):
                 last_seen_at TEXT,
                 last_synced_at TEXT,
                 countries_synced_at TEXT,
+                has_zh INTEGER,
+                zh_quality TEXT,
                 director TEXT,
                 cast_json TEXT,
                 genres_json TEXT,
@@ -313,6 +368,7 @@ def _ensure_title_identity_schema(conn, cursor):
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
                 first_seen_at, last_seen_at, last_synced_at, countries_synced_at,
+                has_zh, zh_quality,
                 director, cast_json, genres_json, runtime, seasons, episodes, trailer_key,
                 providers_checked_at, created_at
             )
@@ -320,6 +376,7 @@ def _ensure_title_identity_schema(conn, cursor):
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
                 first_seen_at, last_seen_at, last_synced_at, countries_synced_at,
+                has_zh, zh_quality,
                 director, cast_json, genres_json, runtime, seasons, episodes, trailer_key,
                 NULL, created_at
             FROM titles_old
@@ -347,6 +404,27 @@ def _ensure_title_identity_schema(conn, cursor):
         raise
     finally:
         cursor.execute("PRAGMA foreign_keys = ON")
+
+
+def _ensure_weighted_rating_index(cursor):
+    """WP-5：加权评分排序是默认视图，表达式索引让 ORDER BY CASE 走索引而不是全表扫描 + 排序。
+
+    先验参数（RATING_PRIOR_VOTES/MEAN）变化会让索引表达式失配，对比 sqlite_master
+    中保存的 SQL 后重建，保证索引始终可被命中。
+    """
+    from app.scoring import weighted_rating_index_expression
+
+    index_name = "idx_titles_weighted_rating"
+    expression = weighted_rating_index_expression()
+    row = cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+        (index_name,),
+    ).fetchone()
+    existing = (row["sql"] if row else "") or ""
+    if expression in existing:
+        return
+    cursor.execute(f"DROP INDEX IF EXISTS {index_name}")
+    cursor.execute(f"CREATE INDEX {index_name} ON titles(({expression}))")
 
 
 def _ensure_columns(cursor, table, columns):

@@ -14,16 +14,20 @@ from app.config import (
 )
 from app.fetcher.common import (
     _cached_title,
+    _cjk_ratio,
     _contains_cjk,
     _is_fresh,
     _is_in_grace_period,
     _is_recent,
     _localized_poster_path,
+    _looks_chinese,
     _min_votes_for,
     _notify_progress,
     _origin_countries_from_details,
     _poster_url,
     _provider_availability,
+    _provider_offers,
+    _zh_quality,
     empty_fetch_stats,
     merge_fetch_stats,
     translate_to_chinese,
@@ -32,6 +36,7 @@ from app.fetcher.discover import discover_all_providers
 from app.fetcher.providers import discover_provider
 from app.fetcher.ratings import get_imdb_ratings
 from app.fetcher.tmdb import fetch_tmdb
+from app.genres import normalize_genres
 
 
 async def _fetch_details(candidate, client):
@@ -80,21 +85,46 @@ async def _fetch_details(candidate, client):
                 labels[provider] = list(dict.fromkeys(
                     (labels.get(provider) or []) + values
                 ))
+        # R02：逐地区结构化 offer，保留平台真实 ID/名称与观看方式
+        offers = _provider_offers(details.get("watch/providers") or {})
+        if offers:
+            merged_offers = {
+                (offer["provider_id"], offer["provider_name"],
+                 offer["region"], offer["monetization"]): offer
+                for offer in title.get("provider_offers") or []
+            }
+            for offer in offers:
+                merged_offers.setdefault(
+                    (offer["provider_id"], offer["provider_name"],
+                     offer["region"], offer["monetization"]), offer,
+                )
+            title["provider_offers"] = list(merged_offers.values())
         title["origin_countries"] = _origin_countries_from_details(details)
         title["director"], title["cast_json"] = _credits_from_details(details)
         title["genres_json"] = _genres_from_details(details)
         title["runtime"], title["seasons"], title["episodes"] = _runtime_from_details(details, title["type"])
         title["trailer_key"] = _trailer_from_details(details)
-        if not _contains_cjk(title["overview"]):
-            # TMDB 无中文译文时会回退原文；这里对原文做机翻兜底，保证展示中文简介。
+        if not _looks_chinese(title["overview"]):
+            # TMDB 无中文译文或中英混排时会回退原文；按 CJK 占比决定是否机翻兜底。
+            original_overview = title["overview"]
             if not title["overview"]:
                 english = await fetch_tmdb(endpoint, {"language": "en-US"}, client=client)
                 title["overview"] = english.get("overview") or ""
+                original_overview = title["overview"]
             if title["overview"]:
-                title["overview"] = await translate_to_chinese(title["overview"])
+                translated = await translate_to_chinese(title["overview"])
+                if _looks_chinese(translated) and translated != original_overview:
+                    title["overview_translated"] = True
+                title["overview"] = translated
         if not _contains_cjk(title["title"]) and not _contains_cjk(title["original_title"]):
             # 标题同理：原生中文作品（original_title 含 CJK）不翻译，避免中文名被二次翻译。
             title["title"] = await translate_to_chinese(title["title"])
+        # 资料语言质量：full / machine / overview_only / title_only / none
+        title["overview_cjk_ratio"] = round(_cjk_ratio(title["overview"]), 4)
+        title["zh_quality"] = _zh_quality(
+            title["title"], title.get("original_title"),
+            title["overview"], bool(title.pop("overview_translated", False)),
+        )
         synced_at = datetime.now(timezone.utc).isoformat()
         title["last_synced_at"] = synced_at
         title["countries_synced_at"] = synced_at
@@ -118,7 +148,8 @@ def _credits_from_details(details):
 
 def _genres_from_details(details):
     genres = [g.get("name") for g in (details.get("genres") or []) if g.get("name")]
-    return json.dumps(genres, ensure_ascii=False)
+    # WP-5：同步时归一化英文/混合题材名为中文规范值
+    return json.dumps(normalize_genres(genres), ensure_ascii=False)
 
 
 def _runtime_from_details(details, media_type):

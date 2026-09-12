@@ -1,11 +1,26 @@
 """同步运行记录：创建/结束/进度/错误/最近记录查询。"""
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from app.db.connection import get_db_connection
 from app.db.utils import _utc_now
 
 logger = logging.getLogger(__name__)
+
+# P04：日志表有界增长，每次同步开始时清理过期记录
+_SYNC_ERRORS_RETAIN_DAYS = 30
+_SYNC_RUNS_RETAIN_DAYS = 90
+
+
+def _prune_sync_logs(cursor):
+    errors_cutoff = (datetime.now(timezone.utc) - timedelta(days=_SYNC_ERRORS_RETAIN_DAYS)).isoformat()
+    runs_cutoff = (datetime.now(timezone.utc) - timedelta(days=_SYNC_RUNS_RETAIN_DAYS)).isoformat()
+    cursor.execute("DELETE FROM sync_errors WHERE created_at < ?", (errors_cutoff,))
+    cursor.execute(
+        "DELETE FROM sync_runs WHERE status != 'running' AND started_at < ?",
+        (runs_cutoff,),
+    )
 
 
 def create_sync_run(reason, days_back, max_pages, window_days):
@@ -21,6 +36,7 @@ def create_sync_run(reason, days_back, max_pages, window_days):
             (reason, "running", days_back, max_pages, window_days, _utc_now(), _utc_now()),
         )
         sync_run_id = cursor.lastrowid
+        _prune_sync_logs(cursor)
         conn.commit()
         return sync_run_id
     finally:

@@ -8,8 +8,6 @@ from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
 
-from deep_translator import GoogleTranslator
-
 from app.config import (
     ASIAN_MIN_IMDB_VOTES,
     ASIAN_ORIGIN_COUNTRIES,
@@ -21,6 +19,7 @@ from app.config import (
     PROVIDERS,
     WATCH_MONETIZATION_TYPES,
 )
+from app.fetcher.translate import translate_sync
 
 logger = logging.getLogger(__name__)
 TRUSTED_RATING_SOURCES = {"imdb", "omdb"}
@@ -64,6 +63,40 @@ def normalize_imdb_id(value):
 def _contains_cjk(text):
     """判断文本是否含中文字符；TMDB 无中文译文时字段会回退原文，需要据此兜底。"""
     return bool(CJK_PATTERN.search(str(text or "")))
+
+
+def _cjk_ratio(text):
+    """CJK 字符占非空白字符比例；用于识别中英混排/机翻不完整的简介。"""
+    value = str(text or "")
+    chars = [char for char in value if not char.isspace()]
+    if not chars:
+        return 0.0
+    return len(CJK_PATTERN.findall(value)) / len(chars)
+
+
+def _looks_chinese(text, min_ratio=0.3):
+    """D04：二值 _contains_cjk 会把含一句中文的英文简介判为已中文化；
+    按 CJK 占比判断，只有达到阈值才认为无需翻译。"""
+    return _cjk_ratio(text) >= min_ratio
+
+
+def _zh_quality(title, original_title, overview, overview_translated=False):
+    """区分中文资料质量，避免 has_zh 布尔值承担全部质量承诺。
+
+    返回：full（标题与简介均为中文）、machine（简介为机器翻译）、
+    overview_only（仅简介中文）、title_only（仅片名中文）、none（暂无中文）。
+    """
+    if overview_translated:
+        return "machine"
+    title_zh = _contains_cjk(title) or _contains_cjk(original_title)
+    overview_zh = _contains_cjk(overview)
+    if title_zh and overview_zh:
+        return "full"
+    if overview_zh:
+        return "overview_only"
+    if title_zh:
+        return "title_only"
+    return "none"
 
 
 def _release_days_since(release_date):
@@ -114,8 +147,8 @@ def _valid_translation(result):
 
 @lru_cache(maxsize=5000)
 def _translate_cached(text: str) -> str:
-    result = GoogleTranslator(source="auto", target="zh-CN").translate(text[:800])
-    if not _valid_translation(result):
+    result = translate_sync(text)
+    if result and result != text and not _valid_translation(result):
         raise ValueError("translation provider returned an error page")
     return result
 
@@ -272,6 +305,45 @@ def _provider_availability(payload):
                     if display_name not in labels:
                         labels.append(display_name)
     return providers, provider_regions, provider_labels
+
+
+def _provider_offers(payload):
+    """R02：逐地区结构化 offer（平台 ID/名称 × 地区 × 观看方式）。
+
+    展示用 offer 覆盖订阅/租赁/购买等全部方式；可见性判断仍使用
+    MONETIZATION_FIELDS 的配置，两者互不影响。
+    """
+    provider_by_id = {provider_id: name for name, provider_id in PROVIDERS.items()}
+    offers = []
+    seen = set()
+    for region, region_offers in (payload.get("results") or {}).items():
+        region = str(region or "").strip().upper()
+        if len(region) != 2:
+            continue
+        for field in WATCH_PROVIDER_FIELDS:
+            for offer in region_offers.get(field) or []:
+                display_name = str(offer.get("provider_name") or "").strip()
+                try:
+                    provider_id = int(offer.get("provider_id"))
+                except (TypeError, ValueError):
+                    continue
+                if not display_name:
+                    continue
+                group = provider_by_id.get(provider_id)
+                if not group:
+                    group = PRIMARY_PROVIDER_ALIASES.get(display_name.casefold(), "others")
+                key = (provider_id, display_name, region, field)
+                if key in seen:
+                    continue
+                seen.add(key)
+                offers.append({
+                    "provider_id": provider_id,
+                    "provider_name": display_name,
+                    "provider_group": group,
+                    "region": region,
+                    "monetization": field,
+                })
+    return offers
 
 
 def _is_fresh(cached):
