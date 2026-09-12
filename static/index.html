@@ -90,14 +90,8 @@
             <section class="intro" aria-labelledby="page-title">
                 <div class="intro-copy">
                     <h1 id="page-title">发现值得看的下一部</h1>
-                    <p class="intro-desc">聚合 Netflix、Disney+、Max 等平台的 IMDb 高分与近期新片，把发现变成你的下一部片。</p>
-                    <p class="intro-line"><span class="intro-line-lead">IMDb 高分与近期新片 · </span>收录 <strong id="intro-total">—</strong> 部 · 更新于<span id="intro-updated">今天</span></p>
+                    <p class="intro-desc">聚合 Netflix、Disney+、Max 等平台的 IMDb 高分与近期新片。</p>
                 </div>
-                <dl class="overview-stats" id="overview-stats" aria-label="内容概览">
-                    <div><dt>收录</dt><dd data-stat="total">—</dd></div>
-                    <div><dt>本周新增</dt><dd data-stat="added">—</dd></div>
-                    <div><dt>我的片单</dt><dd data-stat="list">—</dd></div>
-                </dl>
             </section>
 
             <section class="workspace" aria-label="作品浏览与筛选">
@@ -159,7 +153,7 @@
                             <span class="sort-field-label">排序</span>
                             <span class="sr-only" id="sort-label">排序方式</span>
                             <select class="filter-select" id="sort-filter" aria-labelledby="sort-label">
-                                <option value="rating">评分最高</option>
+                                <option value="rating" title="结合 IMDb 评分与评价人数排序，8.8 分可能排在 8.9 分前">综合口碑</option>
                                 <option value="release_date">最近上映</option>
                                 <option value="updated_at" data-library-only>最近加入</option>
                                 <option value="priority" data-library-only>优先级</option>
@@ -179,39 +173,49 @@
                                     <legend>题材</legend>
                                     <div class="genre-chips" id="genre-filters" aria-label="按题材筛选"></div>
                                 </fieldset>
-                                <fieldset class="filter-section">
-                                    <legend>时长与年代</legend>
-                                    <label class="select-wrap">
-                                        <span class="filter-field-label">时长</span>
-                                        <select class="filter-select" id="runtime-filter">
-                                            <option value="0">全部时长</option>
-                                            <option value="90">90 分钟内（含时长未知）</option>
-                                            <option value="120">120 分钟内（含时长未知）</option>
-                                        </select>
-                                    </label>
-                                    <div class="chip-row" id="year-filters" aria-label="按年代筛选">
-                                        <button class="filter-btn" type="button" data-years="" aria-pressed="true">全部年代</button>
-                                        <button class="filter-btn" type="button" data-years="2020-2029" aria-pressed="false">2020 年代</button>
-                                        <button class="filter-btn" type="button" data-years="2010-2019" aria-pressed="false">2010 年代</button>
-                                        <button class="filter-btn" type="button" data-years="-2009" aria-pressed="false">更早</button>
+                                <!-- U04：时长/年代/产地/评分收进“更多条件”，手机抽屉可折叠；桌面默认展开 -->
+                                <details class="filter-more-details" open>
+                                    <summary class="filter-more-summary">
+                                        <span>更多条件</span>
+                                        <small>时长、年代、产地、评分</small>
+                                        <svg class="filter-more-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                    </summary>
+                                    <div class="filter-details-grid">
+                                        <fieldset class="filter-section">
+                                            <legend>时长与年代</legend>
+                                            <label class="select-wrap">
+                                                <span class="filter-field-label">时长</span>
+                                                <select class="filter-select" id="runtime-filter">
+                                                    <option value="0">全部时长</option>
+                                                    <option value="90">90 分钟内（含时长未知）</option>
+                                                    <option value="120">120 分钟内（含时长未知）</option>
+                                                </select>
+                                            </label>
+                                            <div class="chip-row" id="year-filters" aria-label="按年代筛选">
+                                                <button class="filter-btn" type="button" data-years="" aria-pressed="true">全部年代</button>
+                                                <button class="filter-btn" type="button" data-years="2020-2029" aria-pressed="false">2020 年代</button>
+                                                <button class="filter-btn" type="button" data-years="2010-2019" aria-pressed="false">2010 年代</button>
+                                                <button class="filter-btn" type="button" data-years="-2009" aria-pressed="false">更早</button>
+                                            </div>
+                                        </fieldset>
+                                        <fieldset class="filter-section">
+                                            <legend>产地与评分</legend>
+                                            <label class="select-wrap">
+                                                <span class="filter-field-label">原产地区</span>
+                                                <select class="filter-select" id="region-filter"><option value="">全部地区</option></select>
+                                            </label>
+                                            <label class="select-wrap">
+                                                <span class="filter-field-label">最低评分</span>
+                                                <select class="filter-select" id="rating-filter">
+                                                    <option value="0">全部分数</option>
+                                                    <option value="8">8.0 分以上</option>
+                                                    <option value="7.5">7.5 分以上</option>
+                                                    <option value="7">7.0 分以上</option>
+                                                </select>
+                                            </label>
+                                        </fieldset>
                                     </div>
-                                </fieldset>
-                                <fieldset class="filter-section">
-                                    <legend>产地与评分</legend>
-                                    <label class="select-wrap">
-                                        <span class="filter-field-label">原产地区</span>
-                                        <select class="filter-select" id="region-filter"><option value="">全部地区</option></select>
-                                    </label>
-                                    <label class="select-wrap">
-                                        <span class="filter-field-label">最低评分</span>
-                                        <select class="filter-select" id="rating-filter">
-                                            <option value="0">全部分数</option>
-                                            <option value="8">8.0 分以上</option>
-                                            <option value="7.5">7.5 分以上</option>
-                                            <option value="7">7.0 分以上</option>
-                                        </select>
-                                    </label>
-                                </fieldset>
+                                </details>
                             </div>
                         </div>
                     </div>
@@ -239,16 +243,17 @@
                         <div class="surprise-split">
                             <button id="surprise-btn" class="surprise-btn" type="button" title="从所选范围随机挑一部（快捷键 R）">
                                 <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M5 7h14v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M9 3h6v4H9z"/><circle cx="9" cy="14" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="14" r="1.2" fill="currentColor" stroke="none"/></svg>
-                                <span id="surprise-scope-label">从当前结果</span>
+                                <span>帮我选一部</span>
                                 <kbd aria-hidden="true">R</kbd>
                             </button>
                             <button type="button" class="surprise-scope-btn" id="surprise-scope-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="surprise-scope-menu" title="选择惊喜发现范围" aria-label="选择惊喜发现范围">
                                 <svg class="surprise-scope-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                             </button>
+                            <span class="surprise-scope-summary" id="surprise-scope-label" aria-live="polite"></span>
                             <div class="surprise-scope-menu hidden" id="surprise-scope-menu" role="menu" aria-label="惊喜发现范围">
-                                <button type="button" role="menuitemradio" data-surprise-scope="filters" aria-checked="true">从当前结果</button>
-                                <button type="button" role="menuitemradio" data-surprise-scope="watchlist" aria-checked="false">从我的想看</button>
-                                <button type="button" role="menuitemradio" data-surprise-scope="watching" aria-checked="false">从我的在看</button>
+                                <button type="button" role="menuitemradio" data-surprise-scope="filters" aria-checked="true">当前结果</button>
+                                <button type="button" role="menuitemradio" data-surprise-scope="watchlist" aria-checked="false">想看</button>
+                                <button type="button" role="menuitemradio" data-surprise-scope="watching" aria-checked="false">在看</button>
                             </div>
                         </div>
                         <button id="batch-toggle" class="surprise-btn batch-toggle" type="button" aria-pressed="false" title="批量整理我的片单">
@@ -312,7 +317,7 @@
     <footer class="site-footer">
         <div class="footer-inner">
             <span class="footer-brand">片流 · STREAM INDEX</span>
-            <span class="footer-meta">收录 <strong id="footer-total">—</strong> 部作品 · 数据来自 TMDB 与 IMDb <span id="footer-freshness"></span><span id="footer-version"></span></span>
+            <span class="footer-meta">收录 <strong id="footer-total">—</strong> 部作品 · 近 7 天收录 <strong id="footer-added">—</strong> 部 · 数据来自 TMDB 与 IMDb <span id="footer-freshness"></span><span id="footer-version"></span></span>
             <a class="footer-link" href="https://github.com/mayanzu/streaming-tracker" target="_blank" rel="noopener noreferrer">GitHub</a>
         </div>
     </footer>
@@ -375,6 +380,10 @@
                 </button>
             </div>
             <dl class="data-status-grid" id="data-status-grid"></dl>
+            <details class="data-status-more">
+                <summary>技术细节</summary>
+                <dl class="data-status-grid" id="data-status-details"></dl>
+            </details>
             <p class="data-status-foot"><a class="modal-link" href="/ready" target="_blank" rel="noopener noreferrer">查看原始 JSON</a></p>
         </div>
     </div>
