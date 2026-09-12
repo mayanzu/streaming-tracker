@@ -27,16 +27,20 @@ from app.db.queries import (
     count_titles,
     count_untrusted_titles,
     export_watchlist,
-    get_providers,
     get_recent_releases,
     get_related_titles,
     get_stats,
     get_title_detail,
     get_titles,
     get_titles_missing_countries,
+    import_watchlist,
+    invalidate_catalog_caches,
+    invalidate_stats_cache,
     purge_all_titles,
     purge_untrusted_titles,
+    update_title_preference,
     update_title_status,
+    update_titles_batch,
 )
 from app.db.schema import init_db
 from app.db.sync_runs import (

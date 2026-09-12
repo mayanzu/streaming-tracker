@@ -1,20 +1,35 @@
 const state = {
     page: 1,
     limit: 40,
-    provider: '',
     sort_by: 'release_date',
     order: 'desc',
     type: '',
     search: '',
     region: '',
     rating: 0,
+    genre: '',
+    maxRuntime: 0,
     watchStatus: '',
+    excludeWatched: false, // 6.5：隐藏已看（仅浏览目录时生效，不影响“已看”片单）
+    section: 'discover',   // 5.2 主导航：discover | library | releases
+    libraryStatus: 'watchlist', // 离开“我的片单”时记住子状态
+    releasedDays: 0,       // 6.2 近期新片窗口（天）：0=不限
+    viewingRegion: '',     // 6.1 观看地区：用于过滤详情渠道
+    surpriseScope: 'filters', // 6.6 惊喜发现范围：filters | watchlist | watching
+    surpriseRecent: [],    // 最近抽过的作品 id（避免连续重复）
+    surpriseLastId: null,  // 当前惊喜结果作品 id
+    batchMode: false,      // 6.7 批量管理我的片单
+    selectedIds: new Set(),
     loading: false,
     hasMore: true,
     requestVersion: 0,
     loadedTitleIds: [],
     currentDetailIndex: -1,
-    optimisticPending: null,   // 正在乐观提交状态的作品 id，防同 id 并发操作
+    optimisticPending: null,   // 兼容旧字段（已改用 pendingStatuses Set）
+    pendingStatuses: new Set(), // F15：按作品 ID 跟踪并发片单操作
+    detailRequestId: 0,      // F03：详情请求代次，旧响应不得覆盖新作品
+    activeDetailId: null,    // 当前详情指向的作品 id
+    detailId: null,          // F12：URL ?t= 中记录的详情作品 id
     userInitiatedFilter: false, // 用户主动变更筛选（区别于后退/前进恢复）
     restoreScroll: null,        // 待恢复的滚动位置（后退/前进导航）
     viewMode: 'grid',           // 列表展示模式：grid | list
@@ -22,7 +37,19 @@ const state = {
 
 // 视图模式持久化：localStorage 优先，无记录或存储不可用时回退网格
 try { state.viewMode = localStorage.getItem('view_mode') === 'list' ? 'list' : 'grid'; } catch (_) { state.viewMode = 'grid'; }
+// 观看地区持久化：只接受两位地区码
+try { state.viewingRegion = localStorage.getItem('viewing_region_v1') || ''; } catch (_) { state.viewingRegion = ''; }
+if (!/^[A-Z]{2}$/.test(state.viewingRegion)) state.viewingRegion = '';
+// 6.6 惊喜发现范围与最近抽过的作品
+try { state.surpriseScope = localStorage.getItem('surprise_scope_v1') || 'filters'; } catch (_) { state.surpriseScope = 'filters'; }
+if (!['filters', 'watchlist', 'watching'].includes(state.surpriseScope)) state.surpriseScope = 'filters';
+try {
+    const surpriseRaw = JSON.parse(localStorage.getItem('surprise_recent_v1') || '[]');
+    state.surpriseRecent = Array.isArray(surpriseRaw) ? surpriseRaw.map(Number).filter(Number.isInteger).slice(0, 10) : [];
+} catch (_) { state.surpriseRecent = []; }
 
+/* 播放平台只在详情中展示。六大主流保留品牌色；others 显示 TMDB 原始
+ * 名称（provider_labels），中文服务做常见映射，未回填的显示“其他平台”。 */
 const providerColors = {
     netflix: '#e06060', disney: '#7196dc', max: '#7483d9',
     amazon: '#55a9cf', apple: '#d8d8d2', hulu: '#67b98a',
@@ -33,6 +60,16 @@ const providerNames = {
     amazon: 'Prime Video', apple: 'Apple TV+', hulu: 'Hulu',
     others: '其他平台',
 };
+const OTHER_PROVIDER_ZH = {
+    iQIYI: '爱奇艺', 'Tencent Video': '腾讯视频', Youku: '优酷',
+    Bilibili: '哔哩哔哩', 'Mango TV': '芒果 TV',
+};
+
+function otherProviderLabel(labels) {
+    const list = (labels || []).filter(Boolean);
+    if (!list.length) return '其他平台';
+    return list.map(name => OTHER_PROVIDER_ZH[name] || name).join(' / ');
+}
 const regionNames = {
     CN: '中国大陆（国产）', HK: '中国香港（港剧/港影）', TW: '中国台湾（台剧/台影）',
     JP: '日本（日剧/日影）', KR: '韩国（韩剧/韩影）', US: '美国（美剧/美影）',
@@ -52,10 +89,52 @@ const watchStatusNames = {
     watchlist: '想看', watching: '在看', watched: '已看',
 };
 const ratingTierLabels = { great: '极佳', good: '优秀', fair: '良好' };
-const hiddenMainFilterProviders = new Set(['hulu']);
+const GENRE_ZH = {
+    Action: '动作', Adventure: '冒险', Animation: '动画', Comedy: '喜剧',
+    Crime: '犯罪', Documentary: '纪录', Drama: '剧情', Family: '家庭',
+    Fantasy: '奇幻', History: '历史', Horror: '恐怖', Music: '音乐',
+    Mystery: '悬疑', Romance: '爱情', 'Science Fiction': '科幻',
+    Thriller: '惊悚', War: '战争', Western: '西部',
+};
+// 真实库 genres_json 以中文为主，筛选直接使用中文标签
+const GENRE_OPTIONS = ['剧情', '喜剧', '动作', '悬疑', '科幻', '爱情', '惊悚', '犯罪', '动画', '纪录', '家庭', '奇幻', '恐怖', '冒险', '历史', '战争', '音乐', '西部'];
+
+function genreZh(name) {
+    if (GENRE_ZH[name]) return GENRE_ZH[name];
+    return name;
+}
+
+/* 6.4 搜索匹配原因与局部高亮 */
+const MATCH_REASON_LABELS = {
+    title: '片名匹配', original: '原名匹配', director: '导演匹配',
+    cast: '演员匹配', overview: '简介提及', imdb: 'IMDb 编号',
+};
+
+function highlightSearch(text, query) {
+    const value = String(text ?? '');
+    const needle = (query || '').trim();
+    if (!needle) return escapeHtml(value);
+    const lower = value.toLowerCase();
+    const target = needle.toLowerCase();
+    if (!lower.includes(target)) return escapeHtml(value);
+    let result = '';
+    let index = 0;
+    let found = lower.indexOf(target);
+    while (found !== -1) {
+        result += escapeHtml(value.slice(index, found));
+        result += `<mark class="search-hit">${escapeHtml(value.slice(found, found + target.length))}</mark>`;
+        index = found + target.length;
+        found = lower.indexOf(target, index);
+    }
+    return result + escapeHtml(value.slice(index));
+}
+
+function matchReasonHtml(reason) {
+    const label = MATCH_REASON_LABELS[reason];
+    return label ? `<span class="match-reason">${label}</span>` : '';
+}
 const SKELETON_COUNT = 10;
 
-let providerCounts = {};
 let statsData = null;
 let syncPollTimer = null;
 let bootstrapPollTimer = null;
@@ -74,9 +153,9 @@ const LIST_POSTER_SIZES = '(max-width: 680px) 64px, 80px';
 const posterFallback = `data:image/svg+xml,${encodeURIComponent(`
 <svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750">
   <rect width="500" height="750" fill="#21211d"/>
-  <path d="M190 286h120v178H190z" fill="none" stroke="#4a4942" stroke-width="6"/>
-  <path d="m228 335 70 40-70 40z" fill="#7f7d75"/>
-  <text x="250" y="520" text-anchor="middle" fill="#7f7d75" font-family="Arial,sans-serif" font-size="24">暂无海报</text>
+  <rect x="185" y="290" width="130" height="160" rx="10" fill="none" stroke="#4a4942" stroke-width="6"/>
+  <path d="M210 330h80M210 365h80M210 400h50" stroke="#4a4942" stroke-width="6" stroke-linecap="round"/>
+  <text x="250" y="530" text-anchor="middle" fill="#7f7d75" font-family="Arial,sans-serif" font-size="24">暂无海报</text>
 </svg>`)}`;
 window.posterFallback = posterFallback;
 
@@ -131,51 +210,67 @@ const DETAIL_TTL = 5 * 60 * 1000;
 const PAGE_TTL = 2 * 60 * 1000;
 const DETAIL_CACHE_MAX = 50;
 const PAGE_CACHE_MAX = 5;
+const PAGE_GROUP_MAX = 20; // F-cache收口：单筛选组最多保留页数，防无限滚动撑爆内存
 
-/* LRU 淘汰：超限时删 Map 中最旧条目（按插入序） */
+/* LRU 淘汰：超限时删 Map 中最旧条目；命中时先删后插以刷新访问序 */
 function evictOldest(map, max) {
-    if (map.size > max) map.delete(map.keys().next().value);
+    while (map.size > max) map.delete(map.keys().next().value);
+}
+function touchLru(map, key) {
+    const value = map.get(key);
+    if (value !== undefined) { map.delete(key); map.set(key, value); }
 }
 
-/* 分页缓存键：与 buildFilterParams 同源，search 归一化为 trim+lowercase */
+/* 分页缓存键：与 buildFilterParams 同源，search 归一化为 trim+lowercase。
+ * 注意：所有影响结果集的筛选都必须入键，否则切换筛选会命中旧缓存。 */
 function pageCacheKey() {
     return [
-        state.provider, state.type, state.region, state.rating,
+        state.type, state.region, state.rating,
+        state.genre, state.maxRuntime, state.releasedDays,
         state.sort_by, state.order, state.watchStatus,
+        state.excludeWatched && !state.watchStatus ? 'unwatched' : '',
         (state.search || '').trim().toLowerCase(),
     ].join('|');
 }
 
-/* 读取/写入分页缓存。fetcher 由调用方提供（构建 params + 调 api）。
+/* 读取/写入分页缓存。F01：has_next/total 按页独立存储，不再跨页共享。
  * 返回 { data, total, has_next, fromCache, stale, refreshPromise }。
  * refreshPromise 非空时，调用方可 .then 在后台刷新完成后 patch UI（如 total 变化）。 */
 async function getCachedPage(key, page, fetcher) {
     const now = Date.now();
     let entry = cache.pages.get(key);
+    // LRU：命中即提升访问序
+    if (entry) touchLru(cache.pages, key);
 
     if (entry) {
         const pageData = entry.pages.get(page);
         if (pageData) {
-            const fresh = now - entry.ts <= PAGE_TTL;
+            const fresh = now - pageData.ts <= PAGE_TTL;
             if (fresh) {
-                return { data: pageData, total: entry.total, has_next: entry.has_next, fromCache: true, stale: false, refreshPromise: null };
+                return { data: pageData.data, total: pageData.total, has_next: pageData.has_next, fromCache: true, stale: false, refreshPromise: null };
             }
-            // stale：立即返回旧值，page 1 后台静默刷新（限 page 1 控制流量）
+            // stale：立即返回旧值，后台静默刷新当前页（不限 page 1）
             let refreshPromise = null;
-            if (page === 1 && !entry.revalidating) {
+            if (!entry.revalidating) {
                 entry.revalidating = true;
                 refreshPromise = (async () => {
                     try {
                         const data = await fetcher();
-                        entry.pages.set(1, data.titles || []);
+                        entry.pages.set(page, {
+                            data: data.titles || [],
+                            total: data.total,
+                            has_next: Boolean(data.has_next),
+                            ts: Date.now(),
+                        });
                         entry.total = data.total;
-                        entry.has_next = Boolean(data.has_next);
                         entry.ts = Date.now();
+                        evictGroupPages(entry);
+                        touchLru(cache.pages, key);
                     } catch (_) { /* 保留旧值，不改 ts 以便下次仍可刷新 */ }
                     finally { entry.revalidating = false; }
                 })();
             }
-            return { data: pageData, total: entry.total, has_next: entry.has_next, fromCache: true, stale: true, refreshPromise };
+            return { data: pageData.data, total: pageData.total, has_next: pageData.has_next, fromCache: true, stale: true, refreshPromise };
         }
         // 该页未缓存但同 key 有其他页：合并并发 in-flight 请求
         if (entry.inflight.has(page)) {
@@ -188,15 +283,23 @@ async function getCachedPage(key, page, fetcher) {
         evictOldest(cache.pages, PAGE_CACHE_MAX);
     }
 
-    // miss：发请求并写入，in-flight 期间记录 promise 供并发合并
+    // miss：发请求并按页写入，in-flight 期间记录 promise 供并发合并
     const promise = (async () => {
         try {
             const data = await fetcher();
             const titles = data.titles || [];
-            entry.pages.set(page, titles);
+            const record = {
+                data: titles,
+                total: data.total,
+                has_next: Boolean(data.has_next),
+                ts: Date.now(),
+            };
+            entry.pages.set(page, record);
+            evictGroupPages(entry);
             entry.total = data.total;
             entry.has_next = Boolean(data.has_next);
             entry.ts = Date.now();
+            touchLru(cache.pages, key);
             return { data: titles, total: data.total, has_next: Boolean(data.has_next) };
         } finally {
             entry.inflight.delete(page);
@@ -207,20 +310,31 @@ async function getCachedPage(key, page, fetcher) {
     return { ...result, fromCache: false, stale: false, refreshPromise: null };
 }
 
-/* 读取/写入详情缓存。prefetched=true 表示预取来源（hover 预取标记） */
+function evictGroupPages(entry) {
+    while (entry.pages.size > PAGE_GROUP_MAX) {
+        entry.pages.delete(entry.pages.keys().next().value);
+    }
+}
+
+/* 读取/写入详情缓存。F02：失败时清理与本次请求匹配的 promise，
+ * 重试可发起新请求；旧 finally 不覆盖新请求。prefetched=true 表示预取来源 */
 async function getCachedDetail(id, { prefetched = false } = {}) {
     const numId = Number(id);
     const now = Date.now();
     const entry = cache.detail.get(numId);
 
     if (entry) {
+        touchDetailLru(numId);
         if (entry.data) {
             const fresh = now - entry.ts <= DETAIL_TTL;
             if (fresh) return entry.data;
             // stale：返回旧值并后台刷新
             if (!entry.revalidating) {
                 entry.revalidating = true;
-                revalidateDetail(numId).finally(() => { entry.revalidating = false; });
+                revalidateDetail(numId).finally(() => {
+                    const current = cache.detail.get(numId);
+                    if (current) current.revalidating = false;
+                });
             }
             return entry.data;
         }
@@ -228,9 +342,19 @@ async function getCachedDetail(id, { prefetched = false } = {}) {
     }
 
     const promise = (async () => {
-        const data = await api(`/api/titles/${numId}`);
-        setDetail(numId, data, { prefetched });
-        return data;
+        try {
+            const data = await api(`/api/titles/${numId}`);
+            setDetail(numId, data, { prefetched });
+            return data;
+        } catch (error) {
+            // 仅当仍是本次请求时清理，避免旧失败覆盖新 in-flight
+            const current = cache.detail.get(numId);
+            if (current && current.promise === promise) {
+                if (current.data) current.promise = null;
+                else cache.detail.delete(numId);
+            }
+            throw error;
+        }
     })();
 
     if (entry) {
@@ -239,7 +363,13 @@ async function getCachedDetail(id, { prefetched = false } = {}) {
         cache.detail.set(numId, { data: null, ts: now, promise, prefetched, revalidating: false });
         evictOldest(cache.detail, DETAIL_CACHE_MAX);
     }
+    // promise 异常时已在内部清理；此处附加空 catch 防未处理 rejection 告警由调用方处理
     return promise;
+}
+
+function touchDetailLru(numId) {
+    const value = cache.detail.get(numId);
+    if (value !== undefined) { cache.detail.delete(numId); cache.detail.set(numId, value); }
 }
 
 /* 写入详情缓存（fetch 完成 / PATCH 成功时调用） */
@@ -514,10 +644,29 @@ function displayRegionName(code, compact = false) {
     return localized && localized !== normalized ? localized : '其他地区';
 }
 
+/* 6.1 观看地区：固定常用地区；选择结果写入 localStorage，用于过滤详情渠道 */
+const VIEWING_REGION_OPTIONS = ['', 'CN', 'HK', 'TW', 'JP', 'KR', 'US', 'GB', 'CA', 'AU', 'DE', 'FR', 'ES', 'IT', 'IN', 'TH', 'SG'];
+function viewingRegionName(code) {
+    if (!code) return '不限地区';
+    return regionShortNames[code] || displayRegionName(code, true);
+}
+function viewingRegionSelectHtml() {
+    return `<label class="viewing-region-picker"><span>观看地区</span>
+        <select id="viewing-region-select" aria-label="选择观看地区">
+            ${VIEWING_REGION_OPTIONS.map(code => `<option value="${code}"${code === state.viewingRegion ? ' selected' : ''}>${escapeHtml(viewingRegionName(code))}</option>`).join('')}
+        </select></label>`;
+}
+
+function formatVerifiedDate(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString('zh-CN');
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     hydrateStateFromUrl();
     setupDisplayAdaptation();
     setupEvents();
+    setupAdminMenu();
     setupFilterToggle();
     setupModalSwipe();
     setupWall();
@@ -526,38 +675,72 @@ document.addEventListener('DOMContentLoaded', async () => {
     syncControlsFromState();
     renderSkeletons();
     renderRecentRow();
-
-    await Promise.allSettled([loadStats(), loadProviders(), loadSyncStatus()]);
-    await loadTitles();
+    // 首屏主列表立即加载，不被统计/同步状态阻塞；最近更新视图走独立数据源
+    if (state.section === 'releases') loadReleases();
+    else loadTitles();
+    // F12：直接以 ?t=作品ID 打开时恢复详情（不重复压入历史）
+    const initialDetailId = Number(new URLSearchParams(window.location.search).get('t') || 0);
+    if (Number.isInteger(initialDetailId) && initialDetailId > 0) {
+        showDetail(initialDetailId, { fromHistory: true });
+    }
+    await Promise.allSettled([loadStats(), loadSyncStatus()]);
+    // 列表已先行加载，此处仅补全计数与状态，不再阻塞首屏
 });
 
 function hydrateStateFromUrl() {
     const params = new URLSearchParams(window.location.search);
     const valid = (value, allowed, fallback = '') => allowed.includes(value) ? value : fallback;
-    state.provider = params.get('provider') || '';
     state.type = valid(params.get('type') || '', ['', 'movie', 'tv']);
     state.search = (params.get('q') || '').slice(0, 100);
     state.region = /^[A-Za-z]{2}$/.test(params.get('region') || '') ? params.get('region').toUpperCase() : '';
+    state.genre = (params.get('genre') || '').slice(0, 40);
+    const runtimeParam = Number(params.get('runtime') || params.get('max_runtime') || 0);
+    state.maxRuntime = [0, 90, 120].includes(runtimeParam) ? runtimeParam : 0;
     state.rating = valid(params.get('rating') || '0', ['0', '7', '7.5', '8'], '0');
     state.rating = Number(state.rating);
-    state.sort_by = valid(params.get('sort') || 'release_date', ['rating', 'release_date'], 'release_date');
+    const view = params.get('view') || '';
+    state.section = ['discover', 'library', 'releases'].includes(view) ? view : 'discover';
+    // 6.7 我的片单专属排序只在 library 视图生效
+    const sortAllowed = state.section === 'library'
+        ? ['rating', 'release_date', 'updated_at', 'priority']
+        : ['rating', 'release_date'];
+    state.sort_by = valid(params.get('sort') || 'release_date', sortAllowed, 'release_date');
     state.order = params.get('order') === 'asc' ? 'asc' : 'desc';
-    state.watchStatus = valid(params.get('status') || '', ['', 'watchlist', 'watching', 'watched']);
+    if (state.section === 'library') {
+        state.libraryStatus = valid(params.get('status') || '', ['watchlist', 'watching', 'watched']) || 'watchlist';
+    }
+    state.watchStatus = state.section === 'library' ? state.libraryStatus : '';
+    state.excludeWatched = params.get('unwatched') === '1';
+    const fresh = Number(params.get('fresh') || 0);
+    state.releasedDays = [0, 30, 90, 180].includes(fresh) ? fresh : 0;
+}
+
+/* 6.2：近期新片窗口 → API 起始日期（YYYY-MM-DD） */
+function releasedAfterDate(days) {
+    return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
 }
 
 function updateUrl() {
     const params = new URLSearchParams();
     if (state.search) params.set('q', state.search);
-    if (state.provider) params.set('provider', state.provider);
     if (state.type) params.set('type', state.type);
     if (state.region) params.set('region', state.region);
     if (state.rating) params.set('rating', String(state.rating));
+    if (state.genre) params.set('genre', state.genre);
+    if (state.maxRuntime) params.set('max_runtime', String(state.maxRuntime));
     if (state.sort_by !== 'release_date') params.set('sort', state.sort_by);
     if (state.order === 'asc') params.set('order', 'asc');
-    if (state.watchStatus) params.set('status', state.watchStatus);
+    if (state.section !== 'discover') params.set('view', state.section);
+    if (state.section === 'library' && state.watchStatus) params.set('status', state.watchStatus);
+    if (state.releasedDays) params.set('fresh', String(state.releasedDays));
+    if (state.excludeWatched) params.set('unwatched', '1');
+    // F12：详情打开时保留 ?t=，避免筛选 URL 同步把分享链接抹掉
+    if (state.detailId && !document.getElementById('detail-modal').classList.contains('hidden')) {
+        params.set('t', String(state.detailId));
+    }
     const query = params.toString();
     // 将当前滚动位置存入 history state，供后退/前进导航时恢复
-    history.replaceState({ scrollY: window.scrollY }, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+    history.replaceState({ ...(history.state || {}), scrollY: window.scrollY }, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
 }
 
 function syncControlsFromState() {
@@ -565,24 +748,78 @@ function syncControlsFromState() {
     document.getElementById('clear-search').classList.toggle('hidden', !state.search);
     document.getElementById('region-filter').value = state.region;
     document.getElementById('rating-filter').value = String(state.rating);
+    const genreSelect = document.getElementById('genre-filter');
+    if (genreSelect) {
+        if (!genreSelect.dataset.filled) {
+            GENRE_OPTIONS.forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = genreZh(name);
+                genreSelect.appendChild(option);
+            });
+            genreSelect.dataset.filled = 'true';
+        }
+        genreSelect.value = GENRE_OPTIONS.includes(state.genre) ? state.genre : '';
+        if (state.genre && !GENRE_OPTIONS.includes(state.genre)) {
+            genreSelect.appendChild(new Option(state.genre, state.genre));
+            genreSelect.value = state.genre;
+        }
+    }
+    const runtimeSelect = document.getElementById('runtime-filter');
+    if (runtimeSelect) runtimeSelect.value = String(state.maxRuntime || 0);
     document.getElementById('sort-filter').value = state.sort_by;
     const orderBtn = document.getElementById('sort-order-btn');
     if (orderBtn) {
         orderBtn.dataset.order = state.order;
         orderBtn.setAttribute('aria-label', state.order === 'asc' ? '当前为升序，点击切换为降序' : '当前为降序，点击切换为升序');
+        orderBtn.setAttribute('aria-pressed', state.order === 'asc' ? 'true' : 'false');
     }
+    const unwatchedBtn = document.getElementById('unwatched-toggle');
+    if (unwatchedBtn) {
+        unwatchedBtn.classList.toggle('active', state.excludeWatched);
+        unwatchedBtn.setAttribute('aria-pressed', state.excludeWatched ? 'true' : 'false');
+    }
+    // 5.2 主导航与 6.2 内容模式按钮状态
+    document.body.dataset.section = state.section;
+    document.getElementById('status-filters')?.classList.toggle('hidden', state.section !== 'library');
+    document.querySelectorAll('#primary-nav [data-section]').forEach(button => {
+        const active = button.dataset.section === state.section;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    const premiumBtn = document.getElementById('mode-premium');
+    if (premiumBtn) {
+        const active = premiumActive();
+        premiumBtn.classList.toggle('active', active);
+        premiumBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    const freshBtn = document.getElementById('mode-fresh');
+    if (freshBtn) {
+        const active = state.releasedDays > 0;
+        freshBtn.classList.toggle('active', active);
+        freshBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    const surpriseScopeSelect = document.getElementById('surprise-scope');
+    if (surpriseScopeSelect) surpriseScopeSelect.value = state.surpriseScope;
+    document.querySelectorAll('#sort-filter option[data-library-only]').forEach(option => {
+        option.hidden = state.section !== 'library';
+        option.disabled = state.section !== 'library';
+    });
     document.querySelectorAll('#type-filters [data-type]').forEach(button => {
-        button.classList.toggle('active', button.dataset.type === state.type);
+        const active = button.dataset.type === state.type;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
     document.querySelectorAll('#status-filters [data-status]').forEach(button => {
-        button.classList.toggle('active', button.dataset.status === state.watchStatus);
-    });
-    document.querySelectorAll('#provider-filters [data-provider]').forEach(button => {
-        button.classList.toggle('active', button.dataset.provider === state.provider);
+        const active = button.dataset.status === state.watchStatus;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
     document.getElementById('titles-grid')?.setAttribute('data-view', state.viewMode);
     document.querySelectorAll('.view-toggle-btn').forEach(button => {
-        button.classList.toggle('active', button.dataset.view === state.viewMode);
+        const active = button.dataset.view === state.viewMode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
 }
 
@@ -593,7 +830,7 @@ async function loadStats() {
         const listTotal = Object.values(byStatus).reduce((sum, count) => sum + Number(count || 0), 0);
         document.getElementById('overview-stats').innerHTML = `
             <div><dt>收录</dt><dd data-stat="total">—</dd></div>
-            <div><dt>平均分</dt><dd data-stat="avg">—</dd></div>
+            <div><dt title="仅统计已有评分的作品">平均分</dt><dd data-stat="avg">—</dd></div>
             <div><dt>我的片单</dt><dd data-stat="list">—</dd></div>`;
         animateNumber(document.querySelector('[data-stat="total"]'), Number(statsData.total || 0));
         animateNumber(document.querySelector('[data-stat="avg"]'), Number(statsData.avg_rating || 0), 1);
@@ -618,6 +855,8 @@ async function loadStats() {
             freshness.textContent = parts.length ? `（${parts.join('，')}）` : '';
         }
         document.getElementById('status-count-all').textContent = Number(statsData.total || 0).toLocaleString();
+        const libraryCount = document.getElementById('status-count-library');
+        if (libraryCount) libraryCount.textContent = listTotal.toLocaleString();
         ['watchlist', 'watching', 'watched'].forEach(status => {
             document.getElementById(`status-count-${status}`).textContent = Number(byStatus[status] || 0).toLocaleString();
         });
@@ -650,32 +889,6 @@ async function loadStats() {
     } catch (error) {
         showToast('概览数据暂时无法加载', 'warn');
     }
-}
-
-async function loadProviders() {
-    const container = document.getElementById('provider-filters');
-    try {
-        const data = await api('/api/providers');
-        providerCounts = Object.fromEntries((data.providers || []).map(item => [item.provider_name, item.count]));
-        const providers = (data.available || [])
-            .filter(key => !hiddenMainFilterProviders.has(key))
-            .sort((a, b) => (providerCounts[b] || 0) - (providerCounts[a] || 0));
-        const html = providerButtonHtml('', '全部平台', data.total || 0, '')
-            + providers.map(key => providerButtonHtml(
-                key, providerNames[key] || key, providerCounts[key] || 0, providerColors[key],
-            )).join('');
-        container.innerHTML = html;
-        syncControlsFromState();
-    } catch (error) {
-        container.innerHTML = '<span class="filter-label">平台列表加载失败</span>';
-    }
-}
-
-function providerButtonHtml(key, name, count, color) {
-    return `<button class="filter-btn" type="button" data-provider="${escapeHtml(key)}">
-        ${color ? `<span class="provider-dot" style="background:${color}"></span>` : ''}
-        ${escapeHtml(name)} <span class="count-badge">${Number(count).toLocaleString()}</span>
-    </button>`;
 }
 
 async function loadSyncStatus() {
@@ -764,13 +977,14 @@ function startSyncPolling() {
             syncPollTimer = null;
             showToast('内容同步完成，片库已刷新');
             clearAllCaches(); // 同步完成，列表与详情缓存均已过期
-            await Promise.allSettled([loadStats(), loadProviders()]);
+            await Promise.allSettled([loadStats()]);
             resetAndLoad();
         }
     }, 4000);
 }
 
 async function loadTitles() {
+    if (state.section === 'releases') return; // 最近更新视图由 loadReleases 负责
     if (state.loading || !state.hasMore) return;
     const version = state.requestVersion;
     state.loading = true;
@@ -789,17 +1003,19 @@ async function loadTitles() {
         const result = await getCachedPage(cacheKey, currentPage, fetcher);
         if (version !== state.requestVersion) return;
         const titles = result.data || [];
-        renderTitles(titles, state.page === 1, (state.page - 1) * state.limit);
-        const loaded = Math.min((state.page - 1) * state.limit + titles.length, result.total);
+        const isFirstPage = currentPage === 1;
+        renderTitles(titles, isFirstPage, (currentPage - 1) * state.limit);
+        const loaded = Math.min((currentPage - 1) * state.limit + titles.length, result.total);
         const noun = state.type === 'movie' ? '部电影' : state.type === 'tv' ? '部剧集' : '部作品';
         document.getElementById('stats-info').innerHTML = `找到 <strong>${Number(result.total).toLocaleString()}</strong> ${noun}${result.total ? ` · 已显示 ${loaded}` : ''}`;
         state.hasMore = Boolean(result.has_next);
         document.getElementById('scroll-sentinel').classList.toggle('hidden', !state.hasMore);
         if (!state.hasMore && result.total > 0) end.classList.remove('hidden');
         if (titles.length) state.page += 1;
-        if (state.page === 1 && result.total === 0 && !hasActiveFilters()) checkBootstrapSync();
+        // F12：用请求页而非递增后的 state.page 判断首屏
+        if (isFirstPage && result.total === 0 && !hasActiveFilters()) checkBootstrapSync();
         // 后退/前进导航恢复滚动位置（仅首页加载路径，用户主动筛选不触发）
-        if (state.page === 1 && state.restoreScroll != null && !state.userInitiatedFilter) {
+        if (isFirstPage && state.restoreScroll != null && !state.userInitiatedFilter) {
             const target = state.restoreScroll;
             state.restoreScroll = null;
             requestAnimationFrame(() => window.scrollTo({ top: target, behavior: 'auto' }));
@@ -830,8 +1046,48 @@ async function loadTitles() {
             state.loading = false;
             loader.classList.add('hidden');
             grid.setAttribute('aria-busy', 'false');
-            if (!document.getElementById('detail-modal').classList.contains('hidden')) updateDetailNav();
+            if (!document.getElementById('detail-modal').classList.contains('hidden')) {
+                // 列表变化后重算当前详情在列表中的位置，保证前后切换可用
+                if (state.activeDetailId != null) {
+                    state.currentDetailIndex = state.loadedTitleIds.indexOf(state.activeDetailId);
+                }
+                updateDetailNav();
+            }
         }
+    }
+}
+
+/* 5.2 / 6.8：最近更新视图 —— 近 30 天上映/首播作品，复用网格与列表卡片 */
+const RELEASES_DAYS = 30;
+const RELEASES_LIMIT = 60;
+
+async function loadReleases() {
+    const version = state.requestVersion;
+    const grid = document.getElementById('titles-grid');
+    state.hasMore = false;
+    state.loading = false;
+    document.getElementById('scroll-sentinel').classList.add('hidden');
+    document.getElementById('scroll-end').classList.add('hidden');
+    document.documentElement.dataset.rankSort = '';
+    try {
+        const data = await api(`/api/releases?days=${RELEASES_DAYS}&limit=${RELEASES_LIMIT}`);
+        if (version !== state.requestVersion) return;
+        const titles = data.titles || [];
+        if (titles.length) {
+            renderTitles(titles, true);
+        } else {
+            grid.innerHTML = `<div class="empty-state">
+                <div class="empty-icon-wrap">${searchIcon()}</div>
+                <div class="empty-title">最近没有新的上映或首播</div>
+                <p>继续浏览发现页，或稍后回来看看</p>
+                <div class="empty-actions"><button type="button" class="btn-clear-filters" data-action="goto-discover">去发现</button></div>
+            </div>`;
+        }
+        document.getElementById('stats-info').innerHTML = `近 ${RELEASES_DAYS} 天更新 · <strong>${titles.length}</strong> 部作品`;
+    } catch (error) {
+        if (version !== state.requestVersion) return;
+        renderError(userMessage(error));
+        document.getElementById('stats-info').textContent = '更新列表加载失败';
     }
 }
 
@@ -857,7 +1113,7 @@ function renderTitles(titles, clear, rankBase = 0) {
         renderEmptyState();
         return;
     }
-    const showRank = state.sort_by === 'rating';
+    const showRank = state.section !== 'releases' && state.sort_by === 'rating';
     // 按当前视图模式选择卡片工厂（网格卡 / 横向列表项）
     const createCard = state.viewMode === 'list' ? createTitleListItem : createTitleCard;
     const fragment = document.createDocumentFragment();
@@ -868,8 +1124,19 @@ function renderTitles(titles, clear, rankBase = 0) {
         fragment.appendChild(card);
     });
     grid.appendChild(fragment);
+    if (state.batchMode) refreshBatchSelectionUI();
 }
 
+function cardYear(dateStr) {
+    return (dateStr || '').slice(0, 4) || '年份待定';
+}
+
+function firstGenre(genresJson) {
+    const list = parseJsonList(genresJson);
+    return list.length ? genreZh(list[0]) : '';
+}
+
+/* 播放平台只在详情中展示，卡片默认只回答：叫什么、是什么类型、口碑怎样。 */
 function createTitleCard(title, rank = null) {
     const card = document.createElement('article');
     card.className = 'title-card';
@@ -877,25 +1144,22 @@ function createTitleCard(title, rank = null) {
     card.dataset.watchStatus = title.watch_status || '';
     const rating = Number(title.imdb_rating) || 0;
     const tier = ratingTier(rating);
-    const poster = sanitizeUrl(title.poster_url) || posterFallback;
-    const providers = (title.providers || []).map(provider => `
-        <span class="card-provider"><span class="p-dot" style="background:${providerColors[provider] || '#7f7d75'}"></span>${escapeHtml(providerNames[provider] || provider)}</span>`).join('');
     const status = title.watch_status || '';
-    const region = primaryRegionLabel(title.origin_countries, true);
+    const genre = firstGenre(title.genres_json);
+    const typeLabel = title.type === 'movie' ? '电影' : '剧集';
+    const priority = Number(title.priority) || 0;
     card.innerHTML = `
         <button class="card-main" type="button" aria-label="查看 ${escapeHtml(title.title)} 详情">
             <div class="poster-wrap">
-                <img ${responsivePosterAttributes(poster, CARD_POSTER_SIZES)} alt="${escapeHtml(title.title)} 海报" loading="lazy" decoding="async" onload="window.handleGridPosterLoad(this)" onerror="window.handlePosterError(this)">
+                ${cardPosterMarkup(title, CARD_POSTER_SIZES, typeLabel)}
                 ${status ? `<span class="status-badge" data-status="${status}">${watchStatusNames[status]}</span>` : ''}
                 ${rank ? `<span class="rank-badge" data-rank="${rank}">${rank}</span>` : ''}
-                <span class="poster-rating"${tier ? ` data-tier="${tier}"` : ''}><span class="r-num">${rating ? rating.toFixed(1) : '—'}</span><small>IMDb</small></span>
-                <span class="type-tag">${title.type === 'movie' ? '电影' : '剧集'}</span>
+                <span class="poster-rating"${tier ? ` data-tier="${tier}"` : ''}><span class="r-num">${rating ? rating.toFixed(1) : '待开分'}</span>${rating ? '<small>IMDb</small>' : ''}</span>
+                ${priority > 0 ? `<span class="priority-badge" data-priority="${priority}">${priority >= 2 ? '必看' : '优先'}</span>` : ''}
             </div>
             <div class="card-info">
-                <h2 class="card-title">${escapeHtml(title.title)}</h2>
-                <div class="card-meta"><span>${escapeHtml(title.release_date || '日期待定')}</span>${region ? `<span>${escapeHtml(region)}</span>` : ''}</div>
-                <p class="card-overview">${escapeHtml(title.overview || '暂无剧情简介')}</p>
-                <div class="card-providers">${providers}</div>
+                <h2 class="card-title">${highlightSearch(title.title, state.search)}</h2>
+                <div class="card-meta"><span>${typeLabel}</span><span>${escapeHtml(cardYear(title.release_date))}</span>${genre ? `<span>${escapeHtml(genre)}</span>` : ''}${state.search ? matchReasonHtml(title.match_reason) : ''}</div>
             </div>
         </button>
         <div class="status-menu-wrap">
@@ -909,8 +1173,8 @@ function createTitleCard(title, rank = null) {
     return card;
 }
 
-/* 横向列表卡片：左海报 / 中标题+简介+元数据 / 右评分+平台。
- * 保留 .poster-wrap / .status-menu-wrap 结构，使 updateCardStatus 等既有逻辑直接复用。 */
+/* 横向列表卡片：左海报 / 中标题+简介+元数据 / 右评分。
+ * 播放平台只在详情中展示，不复用网格角标，评分收归右侧独立列。 */
 function createTitleListItem(title, rank = null) {
     const card = document.createElement('article');
     card.className = 'title-card is-list';
@@ -918,28 +1182,25 @@ function createTitleListItem(title, rank = null) {
     card.dataset.watchStatus = title.watch_status || '';
     const rating = Number(title.imdb_rating) || 0;
     const tier = ratingTier(rating);
-    const poster = sanitizeUrl(title.poster_url) || posterFallback;
-    const providers = (title.providers || []).map(provider => `
-        <span class="card-provider"><span class="p-dot" style="background:${providerColors[provider] || '#7f7d75'}"></span>${escapeHtml(providerNames[provider] || provider)}</span>`).join('');
     const status = title.watch_status || '';
     const region = primaryRegionLabel(title.origin_countries, true);
+    const typeLabel = title.type === 'movie' ? '电影' : '剧集';
+    const priority = Number(title.priority) || 0;
     card.innerHTML = `
         <button class="card-main" type="button" aria-label="查看 ${escapeHtml(title.title)} 详情">
             <div class="poster-wrap">
-                <img ${responsivePosterAttributes(poster, LIST_POSTER_SIZES)} alt="${escapeHtml(title.title)} 海报" loading="lazy" decoding="async" onload="window.handleGridPosterLoad(this)" onerror="window.handlePosterError(this)">
+                ${cardPosterMarkup(title, LIST_POSTER_SIZES, typeLabel)}
                 ${status ? `<span class="status-badge" data-status="${status}">${watchStatusNames[status]}</span>` : ''}
-                ${rank ? `<span class="rank-badge" data-rank="${rank}">${rank}</span>` : ''}
-                <span class="poster-rating"${tier ? ` data-tier="${tier}"` : ''}><span class="r-num">${rating ? rating.toFixed(1) : '—'}</span><small>IMDb</small></span>
-                <span class="type-tag">${title.type === 'movie' ? '电影' : '剧集'}</span>
             </div>
             <div class="list-info">
-                <h2 class="card-title">${escapeHtml(title.title)}</h2>
-                <p class="card-overview">${escapeHtml(title.overview || '暂无剧情简介')}</p>
-                <div class="card-meta">${escapeHtml(title.release_date || '日期待定')}${region ? `<span> · ${escapeHtml(region)}</span>` : ''}</div>
+                <h2 class="card-title">${highlightSearch(title.title, state.search)}</h2>
+                <p class="card-overview">${highlightSearch(title.overview || '暂无剧情简介', state.search)}</p>
+                <div class="card-meta"><span>${typeLabel}</span><span>${escapeHtml(title.release_date || '日期待定')}</span>${region ? `<span>${escapeHtml(region)}</span>` : ''}${state.search ? matchReasonHtml(title.match_reason) : ''}</div>
             </div>
             <div class="list-side">
-                <span class="list-rating"${tier ? ` data-tier="${tier}"` : ''}>${rating ? rating.toFixed(1) : '—'}<small>IMDb</small></span>
-                <div class="list-providers">${providers || '<span class="list-provider-empty">暂无平台信息</span>'}</div>
+                ${priority > 0 ? `<span class="list-priority" data-priority="${priority}">${priority >= 2 ? '必看' : '优先'}</span>` : ''}
+                ${rank ? `<span class="list-rank" aria-label="评分排名第 ${rank}">#${rank}</span>` : ''}
+                <span class="list-rating"${tier ? ` data-tier="${tier}"` : ''}>${rating ? rating.toFixed(1) : '待开分'}<small>IMDb</small></span>
             </div>
         </button>
         <div class="status-menu-wrap">
@@ -951,6 +1212,20 @@ function createTitleListItem(title, rank = null) {
     const image = card.querySelector('.poster-wrap img');
     if (image?.complete && image.naturalWidth > 0) image.classList.add('is-loaded');
     return card;
+}
+
+/* 无海报兜底：统一文字封面，不用播放占位符（避免看起来像加载失败） */
+function posterTextCover(title, meta) {
+    return `<div class="poster-text-cover"><span>${escapeHtml(title)}</span>${meta ? `<small>${escapeHtml(meta)}</small>` : ''}</div>`;
+}
+
+/* 卡片用（网格/列表）：有海报走响应式图片，无海报走文字封面 */
+function cardPosterMarkup(title, sizes, typeLabel) {
+    const poster = sanitizeUrl(title.poster_url);
+    if (poster && !poster.startsWith('data:image/')) {
+        return `<img ${responsivePosterAttributes(poster, sizes)} alt="${escapeHtml(title.title)} 海报" loading="lazy" decoding="async" onload="window.handleGridPosterLoad(this)" onerror="window.handlePosterError(this)">`;
+    }
+    return posterTextCover(title.title, `${typeLabel} · ${cardYear(title.release_date)}`);
 }
 
 /* 切换网格/列表视图：localStorage 持久化，重载列表以应用新布局（分页缓存命中，秒级返回） */
@@ -959,10 +1234,119 @@ function setViewMode(mode) {
     state.viewMode = mode;
     try { localStorage.setItem('view_mode', mode); } catch (_) { /* 存储不可用时仅本次生效 */ }
     document.querySelectorAll('.view-toggle-btn').forEach(button => {
-        button.classList.toggle('active', button.dataset.view === mode);
+        const active = button.dataset.view === mode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
     document.getElementById('titles-grid')?.setAttribute('data-view', mode);
     resetAndLoad();
+}
+
+/* 6.2 内容模式：高分精选 = 评分 7.5+ 且按评分排序；近期新片 = 时间窗口 + 最新排序。
+ * 按钮状态由筛选条件推导，用户手动改筛选后自然回到“自定义”，不会假装仍在某个模式。 */
+function premiumActive() {
+    return state.releasedDays === 0 && state.sort_by === 'rating' && state.rating >= 7.5;
+}
+
+function applyMode(mode) {
+    if (mode === 'premium') {
+        if (premiumActive()) {
+            state.rating = 0;
+            state.sort_by = 'release_date';
+        } else {
+            state.rating = 7.5;
+            state.sort_by = 'rating';
+        }
+        state.order = 'desc';
+        state.releasedDays = 0;
+    } else if (mode === 'fresh') {
+        if (state.releasedDays > 0) {
+            state.releasedDays = 0;
+        } else {
+            state.releasedDays = 90;
+            state.rating = 0;
+            state.sort_by = 'release_date';
+            state.order = 'desc';
+        }
+    }
+    resetAndLoad();
+}
+
+/* 5.2 主导航：发现 / 我的片单 / 最近更新 */
+function setSection(section) {
+    if (!['discover', 'library', 'releases'].includes(section) || state.section === section) return;
+    if (state.section === 'library') state.libraryStatus = state.watchStatus || state.libraryStatus;
+    state.section = section;
+    if (section === 'library') state.watchStatus = state.libraryStatus || 'watchlist';
+    else state.watchStatus = '';
+    // 我的片单专属排序离开该视图后回退到默认排序
+    if (section !== 'library' && ['updated_at', 'priority'].includes(state.sort_by)) {
+        state.sort_by = 'release_date';
+        state.order = 'desc';
+    }
+    if (section !== 'library') setBatchMode(false);
+    resetAndLoad();
+}
+
+/* 6.7 批量管理：选择、批量改状态/优先级、移出片单 */
+function syncBatchUI() {
+    const count = state.selectedIds.size;
+    const countEl = document.getElementById('batch-count');
+    if (countEl) countEl.textContent = `已选 ${count} 部`;
+    document.querySelectorAll('#batch-bar [data-action^="batch-"]').forEach(button => {
+        const action = button.dataset.action;
+        if (action === 'batch-select-all' || action === 'batch-exit') return;
+        button.disabled = count === 0;
+    });
+    const priority = document.getElementById('batch-priority');
+    if (priority) {
+        priority.disabled = count === 0;
+        priority.value = '';
+    }
+}
+
+function refreshBatchSelectionUI() {
+    document.querySelectorAll('.title-card').forEach(card => {
+        card.classList.toggle('is-selected', state.selectedIds.has(Number(card.dataset.titleId)));
+    });
+}
+
+function setBatchMode(enabled) {
+    state.batchMode = Boolean(enabled);
+    if (!state.batchMode) state.selectedIds = new Set();
+    document.body.classList.toggle('batch-mode', state.batchMode);
+    document.getElementById('batch-bar')?.classList.toggle('hidden', !state.batchMode);
+    const toggle = document.getElementById('batch-toggle');
+    toggle?.classList.toggle('active', state.batchMode);
+    toggle?.setAttribute('aria-pressed', state.batchMode ? 'true' : 'false');
+    syncBatchUI();
+    refreshBatchSelectionUI();
+}
+
+function toggleBatchSelection(id) {
+    const numId = Number(id);
+    if (state.selectedIds.has(numId)) state.selectedIds.delete(numId);
+    else state.selectedIds.add(numId);
+    refreshBatchSelectionUI();
+    syncBatchUI();
+}
+
+async function applyBatchAction(payload, successText) {
+    const ids = [...state.selectedIds];
+    if (!ids.length) return;
+    try {
+        const result = await api('/api/titles/batch', {
+            method: 'PATCH',
+            body: JSON.stringify({ ids, ...payload }),
+        });
+        showToast(`${successText} ${result.updated} 部${result.skipped ? ` · 跳过 ${result.skipped} 部` : ''}`);
+        clearAllCaches();
+        state.selectedIds = new Set();
+        await loadStats().catch(() => {});
+        resetAndLoad();
+    } catch (error) {
+        showToast(userMessage(error), 'error');
+    }
 }
 
 function bookmarkIcon(filled = '') {
@@ -985,10 +1369,15 @@ function renderEmptyState() {
     const copy = statusLabel
         ? `浏览全部作品，把感兴趣的内容加入“${statusLabel}”`
         : filtered ? '试试减少筛选条件，或换一个关键词搜索' : '内容库暂时为空，请稍后等待同步完成';
+    // 片单子视图为空时，“查看全部作品”已不存在，改为引导去发现页
+    const inLibrary = state.section === 'library' && Boolean(statusLabel);
     document.getElementById('titles-grid').innerHTML = `<div class="empty-state">
         <div class="empty-icon-wrap">${searchIcon()}</div>
         <div class="empty-title">${title}</div><p>${copy}</p>
-        ${filtered ? '<button type="button" class="btn-clear-filters" data-action="clear-filters">查看全部作品</button>' : ''}
+        <div class="empty-actions">
+        ${filtered ? `<button type="button" class="btn-clear-filters" data-action="${inLibrary ? 'goto-discover' : 'clear-filters'}">${inLibrary ? '去发现页找片' : '查看全部作品'}</button>` : ''}
+        ${state.search ? '<button type="button" class="btn-retry" data-action="imdb-import">用 IMDb 链接补录</button>' : ''}
+        </div>
     </div>`;
 }
 
@@ -1007,26 +1396,53 @@ function alertIcon() {
     return '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.1"/></svg>';
 }
 
-async function showDetail(id) {
+async function showDetail(id, options = {}) {
+    const opts = typeof options === 'object' && options !== null ? options : {};
     const modal = document.getElementById('detail-modal');
     const content = document.getElementById('detail-content');
+    const numId = Number(id);
+    const requestId = ++state.detailRequestId;
+    // F12：详情进入浏览器历史，支持前进/后退与分享链接。
+    // 普通打开 push；前后切换 replace，避免历史堆栈被连续切换塞满。
+    if (!opts.fromHistory) {
+        const params = new URLSearchParams(window.location.search);
+        const currentT = params.get('t');
+        if (currentT !== String(numId)) {
+            params.set('t', String(numId));
+            const url = `${window.location.pathname}?${params.toString()}`;
+            if (opts.replace) {
+                // 同一详情会话内切换：保留原条目标记，不再新增历史
+                history.replaceState({ ...(history.state || {}), t: numId }, '', url);
+            } else {
+                history.pushState({ detailView: true, t: numId, scrollY: window.scrollY }, '', url);
+            }
+        } else if (opts.replace && history.state?.detailView) {
+            history.replaceState({ ...history.state, t: numId }, '', window.location.href);
+        }
+    }
+    state.detailId = numId;
+    state.activeDetailId = numId;
     if (modal.classList.contains('hidden')) previousFocus = document.activeElement;
     modal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
-    state.currentDetailIndex = state.loadedTitleIds.indexOf(Number(id));
+    state.currentDetailIndex = state.loadedTitleIds.indexOf(numId);
     updateDetailNav();
     document.querySelector('.modal-panel')?.scrollTo({ top: 0 });
     document.getElementById('close-modal').focus();
     // 缓存命中（fresh 或 stale）时跳过 loading 占位，显著降低详情打开延迟
-    const hasCached = Boolean(cache.detail.get(Number(id))?.data);
+    const hasCached = Boolean(cache.detail.get(numId)?.data);
     if (!hasCached) {
         content.innerHTML = '<div class="detail-loading"><span class="spinner" aria-label="详情加载中"></span></div>';
     }
     try {
-        currentDetail = await getCachedDetail(id);
-        if (!modal.classList.contains('hidden')) renderDetail(currentDetail);
+        const detail = await getCachedDetail(numId);
+        // F03：过期响应直接丢弃；关闭后也不再渲染
+        if (requestId !== state.detailRequestId || state.activeDetailId !== numId) return;
+        currentDetail = detail;
+        if (!modal.classList.contains('hidden')) renderDetail(currentDetail, requestId);
     } catch (error) {
-        content.innerHTML = `<div class="detail-error"><div><p>${escapeHtml(userMessage(error))}</p><button type="button" class="btn-retry" data-action="retry-detail" data-title-id="${id}">重新加载</button></div></div>`;
+        if (requestId !== state.detailRequestId || state.activeDetailId !== numId) return;
+        content.innerHTML = `<div class="detail-error"><div><p>${escapeHtml(userMessage(error))}</p><button type="button" class="btn-retry" data-action="retry-detail" data-title-id="${numId}">重新加载</button></div></div>`;
     }
 }
 
@@ -1044,18 +1460,61 @@ function navigateDetail(direction) {
     const list = state.loadedTitleIds;
     const target = state.currentDetailIndex + direction;
     if (target < 0 || target >= list.length) return;
-    showDetail(list[target]);
+    // F12：同一详情的连续切换用 replace，返回键直接回到原列表
+    showDetail(list[target], { replace: true });
 }
 
 function buildFilterParams(extra = {}) {
     const params = new URLSearchParams({ sort_by: state.sort_by, order: state.order, ...extra });
-    if (state.provider) params.set('provider', state.provider);
     if (state.type) params.set('type', state.type);
     if (state.search) params.set('search', state.search);
     if (state.region) params.set('region', state.region);
     if (state.rating > 0) params.set('min_rating', String(state.rating));
+    if (state.genre) params.set('genre', state.genre);
+    if (state.maxRuntime > 0) params.set('max_runtime', String(state.maxRuntime));
+    if (state.releasedDays > 0) params.set('released_after', releasedAfterDate(state.releasedDays));
+    if (state.excludeWatched && !state.watchStatus) params.set('exclude_watched', 'true');
     if (state.watchStatus) params.set('watch_status', state.watchStatus);
     return params;
+}
+
+/* 6.6 惊喜发现：范围可选（当前筛选/我的想看/我的在看），避开最近抽过的作品 */
+function rememberSurprise(id) {
+    const numId = Number(id);
+    state.surpriseRecent = [numId, ...state.surpriseRecent.filter(item => Number(item) !== numId)].slice(0, 10);
+    try { localStorage.setItem('surprise_recent_v1', JSON.stringify(state.surpriseRecent)); } catch (_) { /* 忽略 */ }
+}
+
+function surpriseScopeLabel(scope = state.surpriseScope) {
+    return scope === 'filters' ? '当前筛选范围' : `我的${watchStatusNames[scope]}`;
+}
+
+async function surpriseFetch(scope, page) {
+    if (scope === 'filters') {
+        return getCachedPage(pageCacheKey(), page, () => api(`/api/titles?${buildFilterParams({ page: String(page), limit: String(state.limit) })}`));
+    }
+    const params = new URLSearchParams({
+        watch_status: scope, sort_by: 'rating', order: 'desc',
+        page: String(page), limit: String(state.limit),
+    });
+    const data = await api(`/api/titles?${params}`);
+    return { data: data.titles || [], total: data.total, has_next: data.has_next };
+}
+
+function renderSurpriseBar(title, total, scope) {
+    const bar = document.getElementById('surprise-bar');
+    const text = document.getElementById('surprise-text');
+    if (!bar || !text) return;
+    const bits = [surpriseScopeLabel(scope), `共 ${Number(total).toLocaleString()} 部`];
+    if (title.runtime) bits.push(`${title.type === 'movie' ? '' : '单集约 '}${Number(title.runtime)} 分钟`);
+    if (title.providers?.length) bits.push('有观看渠道');
+    text.innerHTML = `已为你挑《${escapeHtml(title.title)}》 · ${escapeHtml(bits.join(' · '))}`;
+    bar.classList.remove('hidden');
+}
+
+function hideSurpriseBar() {
+    document.getElementById('surprise-bar')?.classList.add('hidden');
+    state.surpriseLastId = null;
 }
 
 async function surprisePick() {
@@ -1064,21 +1523,32 @@ async function surprisePick() {
     btn.disabled = true;
     btn.classList.add('loading');
     try {
-        // 复用列表分页缓存：用户已浏览过的筛选范围可零请求拿到 total 与作品
-        const key = pageCacheKey();
-        const first = await getCachedPage(key, 1, () => api(`/api/titles?${buildFilterParams({ page: '1', limit: String(state.limit) })}`));
+        const scope = state.surpriseScope;
+        const first = await surpriseFetch(scope, 1);
         const total = Number(first.total || 0);
-        if (!total) { showToast('当前筛选范围内没有可挑选的作品', 'warn'); return; }
-        const idx = Math.floor(Math.random() * total);
-        const page = Math.floor(idx / state.limit) + 1;
-        const pos = idx % state.limit;
-        const result = page === 1
-            ? first
-            : await getCachedPage(key, page, () => api(`/api/titles?${buildFilterParams({ page: String(page), limit: String(state.limit) })}`));
-        const title = (result.data || [])[pos] || (result.data || [])[0];
+        if (!total) {
+            showToast(scope === 'filters' ? '当前筛选范围内没有可挑选的作品' : `你的${watchStatusNames[scope]}还是空的`, 'warn');
+            return;
+        }
+        // 最多重试 6 次避开最近抽过的作品；范围很小时接受重复
+        let title = null;
+        for (let attempt = 0; attempt < 6; attempt++) {
+            const idx = Math.floor(Math.random() * total);
+            const page = Math.floor(idx / state.limit) + 1;
+            const pos = idx % state.limit;
+            const result = page === 1 ? first : await surpriseFetch(scope, page);
+            const candidate = (result.data || [])[pos] || (result.data || [])[0];
+            if (!candidate) break;
+            if (!state.surpriseRecent.includes(Number(candidate.id)) || attempt === 5) {
+                title = candidate;
+                break;
+            }
+        }
         if (!title) { showToast('未找到作品，再试一次', 'warn'); return; }
+        rememberSurprise(title.id);
+        state.surpriseLastId = Number(title.id);
         showDetail(title.id);
-        showToast('为你随机挑了一部');
+        renderSurpriseBar(title, total, scope);
     } catch (error) {
         showToast(userMessage(error), 'error');
     } finally {
@@ -1094,53 +1564,111 @@ function parseJsonList(value) {
     catch (_) { return []; }
 }
 
-function renderDetail(title) {
+function renderDetail(title, requestId = null) {
     const rating = Number(title.imdb_rating) || 0;
     const tier = ratingTier(rating);
     const safePoster = sanitizeUrl(title.poster_url);
-    const poster = safePoster || posterFallback;
     const hasRealPoster = Boolean(safePoster) && !safePoster.startsWith('data:image/');
     const detailBackdrop = hasRealPoster ? tmdbPosterUrl(safePoster, 'w780') : '';
     const heroBgStyle = detailBackdrop
         ? `style="background-image:url('${escapeHtml(detailBackdrop)}')"`
         : 'style="background: linear-gradient(135deg, var(--surface-raised), var(--surface) 70%)"';
     const original = title.original_title && title.original_title !== title.title ? title.original_title : '';
-    const providers = (title.providers || []).map(provider => `
-        <span class="modal-provider"><span class="p-dot" style="background:${providerColors[provider] || '#7f7d75'}"></span>${escapeHtml(providerNames[provider] || provider)}</span>`).join('');
+    const details = title.provider_details || [];
+    // 六大平台显示中文品牌名；others 展开 TMDB 原始名称（labels），
+    // 老数据无 label 时诚实显示“其他平台”，下次同步回填后自动展示具体名称。
+    const detailChannelName = (d) => d.provider === 'others'
+        ? otherProviderLabel(d.labels)
+        : (providerNames[d.provider] || d.provider);
+    // 6.1 观看地区：优先展示覆盖所选地区的渠道；未核验地区的渠道单独标注。
+    const viewingRegion = state.viewingRegion;
+    const renderChannel = (d, pending = false) => {
+        const regions = (d.regions || []).map(displayRegionName).join('、');
+        const tip = pending || !regions ? '地区待确认' : `覆盖地区：${regions}`;
+        return `<span class="modal-provider${pending ? ' is-pending' : ''}" title="${escapeHtml(tip)}">
+            <span class="p-dot" style="background:${providerColors[d.provider] || '#7f7d75'}"></span>${escapeHtml(detailChannelName(d))}${!pending && regions ? ` · ${escapeHtml(regions)}` : ''}</span>`;
+    };
+    const matchedChannels = [];
+    const pendingChannels = [];
+    details.forEach(d => {
+        const regions = d.regions || [];
+        if (!viewingRegion) matchedChannels.push(d);
+        else if (!regions.length) pendingChannels.push(d);
+        else if (regions.includes(viewingRegion)) matchedChannels.push(d);
+    });
+    let providerList = '';
+    if (viewingRegion) {
+        providerList = matchedChannels.map(d => renderChannel(d)).join('');
+        if (!matchedChannels.length) {
+            providerList += `<p class="provider-note provider-note-strong">在${escapeHtml(viewingRegionName(viewingRegion))}暂无已核验的观看渠道。</p>`;
+        }
+        if (pendingChannels.length) {
+            providerList += `<span class="provider-pending-label">以下渠道尚未核验该地区：</span>${pendingChannels.map(d => renderChannel(d, true)).join('')}`;
+        }
+    } else {
+        providerList = details.map(d => renderChannel(d)).join('');
+    }
+    const providerNote = !details.length ? ''
+        : viewingRegion
+            ? '<p class="provider-note">已按你选择的观看地区过滤渠道；虚线渠道尚未核验该地区。</p>'
+            : (details.every(d => !(d.regions && d.regions.length))
+                ? '<p class="provider-note">已发现观看渠道，需确认你所在地区是否可播。</p>'
+                : '');
+    const providerVerified = details.map(d => d.last_seen_at).filter(Boolean).sort().pop();
     const status = title.watch_status || '';
     const imdbLink = title.imdb_id ? `<a class="modal-link" href="https://www.imdb.com/title/${encodeURIComponent(title.imdb_id)}/" target="_blank" rel="noopener noreferrer">在 IMDb 查看 ${externalIcon()}</a>` : '';
     const tmdbType = title.type === 'movie' ? 'movie' : 'tv';
     const watchLink = `<a class="modal-link" href="https://www.themoviedb.org/${tmdbType}/${encodeURIComponent(title.tmdb_id)}/watch" target="_blank" rel="noopener noreferrer">去哪看（TMDB 观看指南） ${externalIcon()}</a>`;
     const region = primaryRegionLabel(title.origin_countries, true);
-    const cast = parseJsonList(title.cast_json).slice(0, 8);
-    const genres = parseJsonList(title.genres_json);
+    const cast = parseJsonList(title.cast_json).slice(0, 4);
+    const castExtra = parseJsonList(title.cast_json).length > 4
+        ? `<button type="button" class="link-more" data-action="expand-cast">展开全部 ${parseJsonList(title.cast_json).length} 位</button>` : '';
+    const genres = parseJsonList(title.genres_json).map(genreZh);
+    const votes = Number(title.rating_votes || 0);
+    const votesText = votes ? `${votes.toLocaleString()} 票` : '样本较少';
     const metaExtra = [
         title.director ? `<span class="meta-tag">导演 ${escapeHtml(title.director)}</span>` : '',
         title.runtime ? `<span class="meta-tag">${title.type === 'movie' ? '' : '单集约 '}${Number(title.runtime)} 分钟</span>` : '',
         title.seasons ? `<span class="meta-tag">${Number(title.seasons)} 季${title.episodes ? ` · ${Number(title.episodes)} 集` : ''}</span>` : '',
     ].join('');
     const trailer = title.trailer_key ? `<a class="modal-link" href="https://www.youtube.com/watch?v=${encodeURIComponent(title.trailer_key)}" target="_blank" rel="noopener noreferrer">观看预告片 ${externalIcon()}</a>` : '';
+    // 6.7 我的记录：优先级 / 个人评分 / 备注 / 观看日期（未加入片单时给出提示）
+    const personalSection = status
+        ? `<div class="modal-section-title">我的记录</div>
+           <div class="personal-fields" data-title-id="${title.id}">
+               <label class="personal-field"><span>优先级</span>
+                   <select class="personal-select" data-personal="priority">
+                       ${[[0, '普通'], [1, '优先'], [2, '必看']].map(([value, label]) => `<option value="${value}"${Number(title.priority || 0) === value ? ' selected' : ''}>${label}</option>`).join('')}
+                   </select></label>
+               <label class="personal-field"><span>我的评分</span>
+                   <select class="personal-select" data-personal="personal_rating">
+                       ${[['', '未评分'], [10, '10 分'], [9, '9 分'], [8, '8 分'], [7, '7 分'], [6, '6 分'], [5, '5 分'], [4, '4 分'], [3, '3 分'], [2, '2 分'], [1, '1 分']].map(([value, label]) => `<option value="${value}"${String(title.personal_rating ?? '') === String(value) ? ' selected' : ''}>${label}</option>`).join('')}
+                   </select></label>
+               <label class="personal-field personal-field-note"><span>备注</span>
+                   <input class="personal-note-input" type="text" maxlength="200" data-personal="note" placeholder="例如：周末陪家人看" value="${escapeHtml(title.note || '')}"></label>
+               ${title.watched_at ? `<p class="provider-note personal-watched">观看于 ${escapeHtml(formatVerifiedDate(title.watched_at))}</p>` : ''}
+           </div>`
+        : '<p class="provider-note">加入片单后，可记录优先级、个人评分与备注。</p>';
     document.getElementById('detail-content').innerHTML = `
         <div class="modal-hero">
             <div class="modal-hero-bg" ${heroBgStyle}></div>
             <div class="modal-hero-content">
                 <div class="modal-hero-rating">
-                    <div class="rating-ring"${tier ? ` data-tier="${tier}"` : ''}>
-                        <svg viewBox="0 0 88 88" aria-hidden="true">
-                            <circle class="ring-bg" cx="44" cy="44" r="34"/>
-                            <circle class="ring-val" cx="44" cy="44" r="34"/>
-                        </svg>
-                        <div class="rating-num">${rating ? rating.toFixed(1) : '—'}</div>
+                    <div class="detail-score"${tier ? ` data-tier="${tier}"` : ''} role="img" aria-label="${rating ? `IMDb 评分 ${rating.toFixed(1)}，${escapeHtml(votesText)}` : '待开分，新片'}">
+                        <span class="detail-score-num">${rating ? rating.toFixed(1) : '—'}</span>
+                        <span class="detail-score-source">${rating ? 'IMDb' : '新片'}</span>
                     </div>
-                    <div class="rating-tier"${tier ? ` data-tier="${tier}"` : ''}>${tier ? `IMDb · ${ratingTierLabels[tier]}` : '暂无评分'}</div>
+                    <div class="rating-tier"${tier ? ` data-tier="${tier}"` : ''}>${rating ? `${escapeHtml(votesText)}${tier ? ` · ${ratingTierLabels[tier]}` : ''}` : '待开分'}</div>
                 </div>
                 <div class="modal-hero-title"><h2 id="modal-title">${escapeHtml(title.title)}</h2>${original ? `<p>${escapeHtml(original)}</p>` : ''}</div>
             </div>
         </div>
         <div class="modal-body">
             <div class="modal-poster-shell">
-                <div class="modal-poster${safePoster ? '' : ' is-fallback'}">
-                    <img class="modal-poster-image" ${responsivePosterAttributes(poster, DETAIL_POSTER_SIZES)} width="500" height="750" alt="${escapeHtml(title.title)} 海报" decoding="async" fetchpriority="high" onload="window.handlePosterLoad(this)" onerror="window.handlePosterError(this)">
+                <div class="modal-poster${hasRealPoster ? '' : ' is-fallback is-loaded'}">
+                    ${hasRealPoster
+                        ? `<img class="modal-poster-image" ${responsivePosterAttributes(safePoster, DETAIL_POSTER_SIZES)} width="500" height="750" alt="${escapeHtml(title.title)} 海报" decoding="async" fetchpriority="high" onload="window.handlePosterLoad(this)" onerror="window.handlePosterError(this)">`
+                        : posterTextCover(title.title, title.type === 'movie' ? '电影' : '剧集')}
                 </div>
             </div>
             <div class="modal-summary">
@@ -1148,49 +1676,47 @@ function renderDetail(title) {
                     <span class="meta-tag">${title.type === 'movie' ? '电影' : '剧集'}</span>
                     ${region ? `<span class="meta-tag">${escapeHtml(region)}</span>` : ''}
                     <span class="meta-tag">${escapeHtml(title.release_date || '日期待定')}</span>
-                    <span class="meta-tag">${Number(title.rating_votes || 0).toLocaleString()} 票</span>
                     ${metaExtra}
                 </div>
-                ${cast.length ? `<div class="modal-cast">主演：${cast.map(name => escapeHtml(name)).join(' / ')}</div>` : ''}
-                ${genres.length ? `<div class="modal-genres">${genres.map(g => `<span class="genre-tag">${escapeHtml(g)}</span>`).join('')}</div>` : ''}
-                <div class="modal-section-title">我的片单</div>
+            </div>
+            <div class="modal-actions">
                 <div class="status-picker" data-title-id="${title.id}">
                     ${[['', '未加入'], ['watchlist', '想看'], ['watching', '在看'], ['watched', '已看']].map(([value, label]) => `<button type="button" data-set-status="${value}" class="${status === value ? 'active' : ''}">${label}</button>`).join('')}
                 </div>
-                ${providers ? `<div class="modal-section-title">可观看平台</div><div class="modal-providers">${providers}</div>` : ''}
+                ${providerList ? `<a class="btn-channel" href="#channels" data-action="goto-channels">查看观看渠道</a>` : ''}
+                <button type="button" class="btn-copy-link" data-action="copy-link" aria-label="复制这部作品的链接">复制链接</button>
             </div>
             <div class="modal-details">
+                ${personalSection}
                 <div class="modal-section-title">剧情简介</div>
                 <div class="modal-overview">${escapeHtml(title.overview || '暂无剧情简介')}</div>
+                ${cast.length ? `<div class="modal-cast">主演：${cast.map(name => escapeHtml(name)).join(' / ')} ${castExtra}</div>` : ''}
+                ${genres.length ? `<div class="modal-genres">${genres.map(g => `<span class="genre-tag">${escapeHtml(g)}</span>`).join('')}</div>` : ''}
+                ${providerList ? `<div class="channels-head"><div class="modal-section-title" id="channels">观看渠道</div>${viewingRegionSelectHtml()}</div><div class="modal-providers">${providerList}</div>${providerNote}${providerVerified ? `<p class="provider-note">最近核验：${escapeHtml(formatVerifiedDate(providerVerified))}</p>` : ''}` : ''}
+                <div class="modal-section-title">资料与观看指南</div>
                 <div class="modal-links">${imdbLink}<a class="modal-link" href="https://www.themoviedb.org/${tmdbType}/${encodeURIComponent(title.tmdb_id)}" target="_blank" rel="noopener noreferrer">在 TMDB 查看 ${externalIcon()}</a>${watchLink}${trailer}</div>
                 <div class="modal-section-title">同类推荐</div>
                 <div class="related-row" id="related-row"><span class="related-loading">正在加载推荐…</span></div>
             </div>
         </div>`;
-    const ringValue = document.querySelector('#detail-content .ring-val');
-    if (ringValue && rating > 0) {
-        const circumference = 2 * Math.PI * 34;
-        const target = circumference * (1 - Math.min(rating, 10) / 10);
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-            ringValue.style.strokeDashoffset = target.toFixed(1);
-        }));
-    }
     recordRecentView(title); // 详情渲染即计入最近浏览
-    loadRelated(title.id);
+    loadRelated(title.id, requestId);
 }
 
-async function loadRelated(id) {
+async function loadRelated(id, requestId = null) {
     const row = document.getElementById('related-row');
     if (!row) return;
     try {
         const data = await api(`/api/titles/${encodeURIComponent(id)}/related?limit=12`);
+        // F03：详情已切换时不更新旧推荐区
+        if (requestId !== null && (requestId !== state.detailRequestId || state.activeDetailId !== Number(id))) return;
         const items = data.titles || [];
         if (!items.length) { row.innerHTML = '<span class="related-empty">暂无同类推荐</span>'; return; }
         row.innerHTML = items.map(item => `
-            <button type="button" class="related-chip" data-related-id="${item.id}" aria-label="查看 ${escapeHtml(item.title)}">
+            <button type="button" class="related-chip" data-related-id="${item.id}" aria-label="查看 ${escapeHtml(item.title)}${item.reason ? `，${escapeHtml(item.reason)}` : ''}">
                 ${sanitizeUrl(item.poster_url) ? `<img src="${escapeHtml(sanitizeUrl(item.poster_url))}" alt="" loading="lazy" decoding="async" width="90" height="135">` : ''}
                 <span class="related-title">${escapeHtml(item.title)}</span>
-                <span class="related-rating">${item.imdb_rating ? Number(item.imdb_rating).toFixed(1) : '—'}</span>
+                <span class="related-rating">${item.imdb_rating ? Number(item.imdb_rating).toFixed(1) : '待开分'}${item.reason ? ` · ${escapeHtml(item.reason)}` : ''}</span>
             </button>`).join('');
         row.querySelectorAll('[data-related-id]').forEach(btn => {
             btn.addEventListener('click', () => showDetail(btn.getAttribute('data-related-id')));
@@ -1200,10 +1726,41 @@ async function loadRelated(id) {
     }
 }
 
+/* F12/6.9：复制当前作品的可分享链接（含 ?t=），失败时回退手动复制提示 */
+async function copyCurrentLink(titleId) {
+    if (!titleId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('t', String(titleId));
+    const text = url.toString();
+    const fallbackCopy = () => {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand('copy');
+        textarea.remove();
+        return ok;
+    };
+    try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+        else if (!fallbackCopy()) throw new Error('copy unavailable');
+        showToast('作品链接已复制，可直接分享');
+    } catch (_) {
+        showToast('复制失败，请从地址栏手动复制', 'warn');
+    }
+}
+
 async function exportWatchlist() {
     try {
         const data = await api('/api/watchlist/export');
-        const blob = new Blob([JSON.stringify({ exported_at: new Date().toISOString(), count: data.count, items: data.items }, null, 2)], { type: 'application/json' });
+        const blob = new Blob([JSON.stringify({
+            schema_version: data.schema_version || 1,
+            exported_at: data.exported_at || new Date().toISOString(),
+            count: data.count, items: data.items,
+        }, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -1213,6 +1770,73 @@ async function exportWatchlist() {
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
         showToast(`已导出 ${data.count} 部片单`);
+    } catch (error) {
+        showToast(userMessage(error), 'error');
+    }
+}
+
+/* F-restore：读取备份 → 与当前片单对比预览 → 用户确认后合并导入（可重复执行） */
+async function importWatchlistFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    let parsed;
+    try {
+        parsed = JSON.parse(await file.text());
+    } catch {
+        showToast('备份文件无法解析，请选择导出的 JSON', 'error');
+        return;
+    }
+    const items = Array.isArray(parsed) ? parsed : parsed.items;
+    if (!Array.isArray(items) || !items.length) {
+        showToast('备份中没有可恢复的片单条目', 'warn');
+        return;
+    }
+    const keyOf = (item) => `${item.type}:${item.tmdb_id}`;
+    let currentKeys = new Set();
+    try {
+        const current = await api('/api/watchlist/export');
+        currentKeys = new Set((current.items || []).map(keyOf));
+    } catch { /* 预览失败也允许继续，由服务端幂等合并 */ }
+    const valid = items.filter(item => item && item.tmdb_id && (item.type === 'movie' || item.type === 'tv') && item.watch_status);
+    const invalid = items.length - valid.length;
+    const addCount = valid.filter(item => !currentKeys.has(keyOf(item))).length;
+    const existCount = valid.length - addCount;
+    const ok = window.confirm(
+        `从备份恢复片单？\n新增 ${addCount} 部 · 已存在 ${existCount} 部（状态不一致会被覆盖）${invalid ? `\n无效条目 ${invalid} 部将被跳过` : ''}`,
+    );
+    if (!ok) return;
+    try {
+        const result = await api('/api/watchlist/import', {
+            method: 'POST',
+            body: JSON.stringify({ items: valid }),
+        });
+        showToast(`恢复完成：新增 ${result.added} · 更新 ${result.updated} · 跳过 ${result.skipped}`);
+        clearAllCaches();
+        await Promise.allSettled([loadStats()]);
+        resetAndLoad();
+    } catch (error) {
+        showToast(userMessage(error), 'error');
+    }
+}
+
+/* F-import：显式 IMDb 补录入口，展示 imported / pending / failed */
+async function importByImdb(prefill = '') {
+    const reference = window.prompt('输入 IMDb ID 或作品链接（例如 tt1234567），补录到内容库', prefill || '');
+    if (!reference || !reference.trim()) return;
+    showToast('正在补录，请稍候…');
+    try {
+        const result = await api('/api/titles/import', {
+            method: 'POST',
+            body: JSON.stringify({ imdb: reference.trim() }),
+        });
+        if (result.status === 'pending') {
+            showToast(`已进入待处理：${result.title || result.tmdb_id}（${result.pending_reason || '等待开分或补全资料'}）`, 'warn');
+        } else {
+            showToast(`补录成功：${result.title || result.tmdb_id}`);
+        }
+        clearAllCaches();
+        resetAndLoad();
     } catch (error) {
         showToast(userMessage(error), 'error');
     }
@@ -1251,7 +1875,7 @@ function recordRecentView(title) {
     renderRecentRow();
 }
 
-/* 渲染最近浏览横条：有数据才显示，点击复用详情缓存 */
+/* 渲染最近浏览：有数据才显示；默认折叠为单行，点击展开（5.9：不再挤占首屏正文） */
 function renderRecentRow() {
     const row = document.getElementById('recent-row');
     const scroller = document.getElementById('recent-scroller');
@@ -1262,12 +1886,23 @@ function renderRecentRow() {
         scroller.innerHTML = '';
         return;
     }
+    const count = document.getElementById('recent-count');
+    if (count) count.textContent = String(list.length);
     scroller.innerHTML = list.map(item => `
         <button type="button" class="recent-chip" data-recent-id="${item.id}" aria-label="查看 ${escapeHtml(item.title)}">
-            ${item.poster ? `<img src="${escapeHtml(item.poster)}" alt="" loading="lazy" decoding="async" width="60" height="90">` : ''}
+            <img src="${escapeHtml(item.poster || posterFallback)}" alt="" loading="lazy" decoding="async" width="48" height="72">
             <span>${escapeHtml(item.title)}</span>
         </button>`).join('');
     row.classList.remove('hidden');
+}
+
+function toggleRecentRow(force) {
+    const row = document.getElementById('recent-row');
+    const toggle = document.getElementById('recent-toggle');
+    if (!row || !toggle) return;
+    const open = typeof force === 'boolean' ? force : !row.classList.contains('is-open');
+    row.classList.toggle('is-open', open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
 /* ── 乐观更新：状态切换先改本地 UI，API 失败时回滚 ──
@@ -1361,14 +1996,15 @@ async function setTitleStatus(id, watchStatus, sourceButton) {
     const numId = Number(id);
     // 幂等短路：目标状态与当前一致时不发请求
     if (readCurrentStatus(numId) === watchStatus) { closeStatusMenus(); return; }
-    // 冲突保护：同一作品请求进行中时忽略再次点击
-    if (state.optimisticPending === numId) {
+    // F15：按作品跟踪并发，A 未完成时 B 仍可操作
+    if (state.pendingStatuses.has(numId)) {
         showToast('操作进行中，请稍候', 'warn');
         return;
     }
     const snapshot = buildStatusSnapshot(numId, watchStatus);
     applyStatusOptimistic(numId, watchStatus);
-    state.optimisticPending = numId;
+    state.pendingStatuses.add(numId);
+    state.optimisticPending = numId; // 兼容旧调试字段
     const scope = sourceButton?.closest('.status-picker, .status-menu');
     scope?.querySelectorAll('button').forEach(button => { button.disabled = true; });
     try {
@@ -1376,28 +2012,57 @@ async function setTitleStatus(id, watchStatus, sourceButton) {
             method: 'PATCH',
             body: JSON.stringify({ watch_status: watchStatus }),
         });
-        state.optimisticPending = null;
+        state.pendingStatuses.delete(numId);
+        state.optimisticPending = state.pendingStatuses.size ? [...state.pendingStatuses][0] : null;
         // 以权威数据覆盖详情缓存（含最新 watch_status 与时间戳）
         setDetail(numId, title);
         if (currentDetail?.id === numId) {
             currentDetail = title;
             syncPickerActive(numId, watchStatus);
         }
+        // F04：状态写成功后失效全部分页缓存，避免其他视图/排序沿用旧成员集合
+        invalidatePageCache();
         showToast(watchStatus ? `已加入“${watchStatusNames[watchStatus]}”` : '已从片单移除');
         // 后台校正统计计数（乐观值通常已一致，仅防并发漂移）
         loadStats().catch(() => {});
         // 当前视图按状态过滤且该作品已移出结果集 → 刷新列表
-        if (state.watchStatus && state.watchStatus !== watchStatus) {
-            invalidatePageCache(pageCacheKey());
+        if (state.watchStatus) {
+            // 同一状态桶内成员变化（如空想看页新增）也需刷新
+            resetAndLoad();
+        } else if (state.excludeWatched && watchStatus === 'watched') {
+            // 隐藏已看模式下新标记“已看”的作品应立即离开结果集
             resetAndLoad();
         }
     } catch (error) {
-        state.optimisticPending = null;
+        state.pendingStatuses.delete(numId);
+        state.optimisticPending = state.pendingStatuses.size ? [...state.pendingStatuses][0] : null;
         rollbackStatus(snapshot);
+        // F15：失败后以权威统计覆盖，避免全局快照覆盖并发成功项
+        loadStats().catch(() => {});
         showToast(userMessage(error), 'error');
     } finally {
         scope?.querySelectorAll('button').forEach(button => { button.disabled = false; });
         closeStatusMenus();
+    }
+}
+
+/* 6.7 保存个人记录字段：成功后用权威数据覆盖详情缓存，不整屏重渲染以避免输入焦点丢失 */
+async function savePersonalField(id, field, rawValue) {
+    const numId = Number(id);
+    let value;
+    if (field === 'priority') value = Number(rawValue) || 0;
+    else if (field === 'personal_rating') value = rawValue === '' ? 0 : Number(rawValue);
+    else value = String(rawValue ?? '').slice(0, 200);
+    try {
+        const title = await api(`/api/titles/${numId}/preference`, {
+            method: 'PATCH',
+            body: JSON.stringify({ [field]: value }),
+        });
+        setDetail(numId, title);
+        if (currentDetail?.id === numId) currentDetail = title;
+        showToast(field === 'note' ? '备注已保存' : '已保存');
+    } catch (error) {
+        showToast(userMessage(error), 'error');
     }
 }
 
@@ -1416,14 +2081,34 @@ function updateCardStatus(id, status) {
     });
 }
 
-function closeModal() {
+function finalizeCloseModal() {
     const modal = document.getElementById('detail-modal');
     if (modal.classList.contains('hidden')) return;
     modal.classList.add('hidden');
     document.body.style.overflow = '';
     currentDetail = null;
     state.currentDetailIndex = -1;
+    // F03：关闭即让在途详情请求失效
+    state.detailRequestId += 1;
+    state.activeDetailId = null;
+    state.detailId = null;
     previousFocus?.focus?.();
+}
+
+function closeModal(options = {}) {
+    const modal = document.getElementById('detail-modal');
+    if (modal.classList.contains('hidden')) return;
+    // F12：由浏览器后退触发的关闭直接收起；主动关闭时优先回退历史条目。
+    if (!options.fromHistory && state.detailId != null && history.state?.detailView) {
+        history.back();
+        return;
+    }
+    if (!options.fromHistory && state.detailId != null) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('t');
+        history.replaceState({ ...(history.state || {}), detailView: false }, '', url.toString());
+    }
+    finalizeCloseModal();
 }
 
 /* 键盘帮助浮层开关 */
@@ -1484,7 +2169,7 @@ function setupModalSwipe() {
 }
 
 function hasActiveFilters() {
-    return Boolean(state.provider || state.type || state.search || state.region || state.rating || state.watchStatus);
+    return Boolean(state.type || state.search || state.region || state.rating || state.genre || state.maxRuntime || state.watchStatus || state.excludeWatched || state.releasedDays);
 }
 
 function resetAndLoad() {
@@ -1499,19 +2184,27 @@ function resetAndLoad() {
     document.getElementById('scroll-end').classList.add('hidden');
     document.getElementById('scroll-sentinel').classList.remove('hidden');
     renderSkeletons();
-    // 筛选变更后平滑滚回内容区顶部，确保用户从第一行结果开始看
+    state.selectedIds = new Set();
+    syncBatchUI();
+    // 筛选变更后回到内容区顶部；尊重减少动态偏好
     const workspace = document.querySelector('.workspace');
-    if (workspace) workspace.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    loadTitles();
+    if (workspace) workspace.scrollIntoView({ behavior: reduceMotionQuery.matches ? 'auto' : 'smooth', block: 'start' });
+    if (state.section === 'releases') loadReleases();
+    else loadTitles();
 }
 
 function clearAllFilters() {
-    state.provider = '';
     state.type = '';
     state.search = '';
     state.region = '';
     state.rating = 0;
-    state.watchStatus = '';
+    state.genre = '';
+    state.maxRuntime = 0;
+    state.watchStatus = state.section === 'library' ? state.libraryStatus : '';
+    state.excludeWatched = false;
+    state.releasedDays = 0;
+    state.sort_by = 'release_date';
+    state.order = 'desc';
     resetAndLoad();
 }
 
@@ -1519,10 +2212,13 @@ function renderActiveFilters() {
     const container = document.getElementById('active-filters');
     const chips = [];
     if (state.search) chips.push(['关键词', state.search, '', () => { state.search = ''; resetAndLoad(); }]);
-    if (state.provider) chips.push(['平台', providerNames[state.provider] || state.provider, providerColors[state.provider], () => { state.provider = ''; resetAndLoad(); }]);
     if (state.type) chips.push(['类型', state.type === 'movie' ? '电影' : '剧集', '', () => { state.type = ''; resetAndLoad(); }]);
     if (state.region) chips.push(['地区', displayRegionName(state.region), '', () => { state.region = ''; resetAndLoad(); }]);
     if (state.rating) chips.push(['评分', `${state.rating} 分以上`, '', () => { state.rating = 0; resetAndLoad(); }]);
+    if (state.genre) chips.push(['题材', genreZh(state.genre), '', () => { state.genre = ''; resetAndLoad(); }]);
+    if (state.maxRuntime) chips.push(['时长', `${state.maxRuntime} 分钟内`, '', () => { state.maxRuntime = 0; resetAndLoad(); }]);
+    if (state.excludeWatched && !state.watchStatus) chips.push(['片单', '隐藏已看', '', () => { state.excludeWatched = false; resetAndLoad(); }]);
+    if (state.releasedDays > 0) chips.push(['上映', `近 ${state.releasedDays} 天`, '', () => { state.releasedDays = 0; resetAndLoad(); }]);
     if (!chips.length) {
         container.classList.add('hidden');
         container.innerHTML = '';
@@ -1556,15 +2252,18 @@ function updateFilterSummary() {
     const el = document.getElementById('filter-summary');
     if (!el) return;
     const parts = [];
-    if (state.provider) parts.push(providerNames[state.provider] || state.provider);
     if (state.type) parts.push(state.type === 'movie' ? '电影' : '剧集');
     if (state.region) parts.push(displayRegionName(state.region));
     if (state.rating > 0) parts.push(`≥${state.rating}`);
+    if (state.genre) parts.push(genreZh(state.genre));
+    if (state.maxRuntime > 0) parts.push(`≤${state.maxRuntime}分`);
+    if (state.excludeWatched && !state.watchStatus) parts.push('隐藏已看');
+    if (state.releasedDays > 0) parts.push(`近${state.releasedDays}天`);
     if (state.sort_by !== 'release_date') {
         const sortLabel = '评分最高';
         parts.push(state.order === 'asc' ? `${sortLabel}↑` : sortLabel);
     }
-    el.textContent = parts.length ? parts.join(' · ') : '全部作品';
+    el.textContent = parts.join(' · ');
 }
 
 function setupFilterToggle() {
@@ -1572,27 +2271,60 @@ function setupFilterToggle() {
     const panel = document.getElementById('filter-bar');
     const backdrop = document.getElementById('sidebar-backdrop');
     if (!btn || !panel || !backdrop) return;
-    const close = () => {
+    const close = (restoreFocus = false) => {
+        if (!document.body.classList.contains('sidebar-open')) return;
         document.body.classList.remove('sidebar-open');
         backdrop.classList.add('hidden');
+        backdrop.setAttribute('aria-hidden', 'true');
         btn.setAttribute('aria-expanded', 'false');
+        document.body.style.overflow = '';
+        panel.removeAttribute('role');
+        panel.removeAttribute('aria-modal');
+        // F14：焦点回到触发按钮，Tab 不再进入屏外抽屉
+        if (restoreFocus) btn.focus();
     };
     const open = () => {
         document.body.classList.add('sidebar-open');
         backdrop.classList.remove('hidden');
+        backdrop.setAttribute('aria-hidden', 'false');
         btn.setAttribute('aria-expanded', 'true');
+        // F14：抽屉作为模态对话框管理焦点；移动端 drawer-mode 时生效
+        panel.setAttribute('role', 'dialog');
+        panel.setAttribute('aria-modal', 'true');
+        panel.setAttribute('aria-label', '筛选');
+        // F09：打开时锁定背景滚动并将焦点移入抽屉
+        document.body.style.overflow = 'hidden';
+        panel.querySelector('button, select, input')?.focus();
     };
     btn.addEventListener('click', () => {
-        if (document.body.classList.contains('sidebar-open')) close();
+        if (document.body.classList.contains('sidebar-open')) close(true);
         else open();
     });
-    backdrop.addEventListener('click', close);
-    document.addEventListener('click', (e) => {
-        if (document.body.classList.contains('sidebar-open') && e.target.closest('#filter-bar')) close();
-    });
+    backdrop.addEventListener('click', () => close(true));
+    // F08：抽屉内点击不再自动关闭，仅关闭按钮/遮罩/Esc/桌面切换关闭。
+    // 选择控件 change 后保持打开，支持连续设置平台、产地、评分。
     const desktopMq = window.matchMedia('(min-width: 901px)');
     desktopMq.addEventListener('change', (e) => { if (e.matches) close(); });
-    window.__closeSidebar = close;
+    window.__closeSidebar = () => close(true);
+    // F09：移动端将抽屉提升为 body 级顶层容器，避免被 main 的层叠上下文压住。
+    const originalParent = panel.parentElement;
+    const originalNext = panel.nextSibling;
+    const placePanel = () => {
+        if (window.matchMedia('(max-width: 900px)').matches) {
+            if (panel.parentElement !== document.body) {
+                document.body.appendChild(panel);
+                panel.classList.add('drawer-mode');
+            }
+        } else {
+            panel.classList.remove('drawer-mode');
+            if (panel.parentElement !== originalParent) {
+                originalParent.insertBefore(panel, originalNext);
+            }
+            close();
+        }
+    };
+    placePanel();
+    desktopMq.addEventListener('change', placePanel);
     // 移动端显示抽屉开关，桌面隐藏
     const syncVis = () => btn.classList.toggle('hidden', desktopMq.matches);
     syncVis();
@@ -1610,7 +2342,7 @@ async function checkBootstrapSync() {
             if (next && !next.sync?.running) {
                 clearInterval(bootstrapPollTimer);
                 bootstrapPollTimer = null;
-                await Promise.allSettled([loadStats(), loadProviders()]);
+                await Promise.allSettled([loadStats()]);
                 resetAndLoad();
             }
         }, 6000);
@@ -1628,19 +2360,66 @@ function closeStatusMenus(except = null) {
     });
 }
 
+/* 5.2 管理菜单：同步 / 导出 / 恢复 / 数据健康收进一处，减少与搜片竞争 */
+function closeAdminMenu(restoreFocus = false) {
+    const menu = document.getElementById('admin-menu');
+    const button = document.getElementById('admin-menu-btn');
+    if (!menu || menu.classList.contains('hidden')) return;
+    menu.classList.add('hidden');
+    button?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) button?.focus();
+}
+
+function setupAdminMenu() {
+    const button = document.getElementById('admin-menu-btn');
+    const menu = document.getElementById('admin-menu');
+    if (!button || !menu) return;
+    button.addEventListener('click', event => {
+        event.stopPropagation();
+        if (menu.classList.contains('hidden')) {
+            menu.classList.remove('hidden');
+            button.setAttribute('aria-expanded', 'true');
+            menu.querySelector('button:not(.hidden), a[href]')?.focus();
+        } else {
+            closeAdminMenu(true);
+        }
+    });
+    menu.addEventListener('click', event => {
+        if (event.target.closest('[role="menuitem"]')) closeAdminMenu();
+    });
+}
+
 function setupEvents() {
     document.addEventListener('click', event => {
-        const provider = event.target.closest('[data-provider]');
-        if (provider) { state.provider = provider.dataset.provider; resetAndLoad(); return; }
+        const sectionTab = event.target.closest('#primary-nav [data-section]');
+        if (sectionTab) { setSection(sectionTab.dataset.section); return; }
+
+        const modeBtn = event.target.closest('#mode-filters [data-mode]');
+        if (modeBtn) { applyMode(modeBtn.dataset.mode); return; }
+
+        const batchToggle = event.target.closest('#batch-toggle');
+        if (batchToggle) { setBatchMode(!state.batchMode); return; }
 
         const type = event.target.closest('#type-filters [data-type]');
         if (type) { state.type = type.dataset.type; resetAndLoad(); return; }
+
+        const unwatchedToggle = event.target.closest('#unwatched-toggle');
+        if (unwatchedToggle) { state.excludeWatched = !state.excludeWatched; resetAndLoad(); return; }
 
         const statusTab = event.target.closest('#status-filters [data-status]');
         if (statusTab) { state.watchStatus = statusTab.dataset.status; resetAndLoad(); return; }
 
         const cardMain = event.target.closest('.card-main');
-        if (cardMain) { showDetail(cardMain.closest('.title-card').dataset.titleId); return; }
+        if (cardMain) {
+            const card = cardMain.closest('.title-card');
+            // 批量模式下点击卡片改为选中/取消，不打开详情
+            if (state.batchMode && state.section === 'library') {
+                toggleBatchSelection(card.dataset.titleId);
+                return;
+            }
+            showDetail(card.dataset.titleId);
+            return;
+        }
 
         const menuTrigger = event.target.closest('.status-menu-trigger');
         if (menuTrigger) {
@@ -1672,6 +2451,35 @@ function setupEvents() {
 
         const action = event.target.closest('[data-action]');
         if (action?.dataset.action === 'clear-filters') clearAllFilters();
+        if (action?.dataset.action === 'goto-discover') { setSection('discover'); return; }
+        if (action?.dataset.action === 'surprise-again') { surprisePick(); return; }
+        if (action?.dataset.action === 'surprise-tonight') {
+            if (state.surpriseLastId != null) setTitleStatus(state.surpriseLastId, 'watching');
+            return;
+        }
+        if (action?.dataset.action === 'surprise-close') { hideSurpriseBar(); return; }
+        if (action?.dataset.action === 'batch-select-all') {
+            state.loadedTitleIds.forEach(id => state.selectedIds.add(Number(id)));
+            refreshBatchSelectionUI();
+            syncBatchUI();
+            return;
+        }
+        if (action?.dataset.action === 'batch-exit') { setBatchMode(false); return; }
+        if (action?.dataset.action === 'batch-watchlist') { applyBatchAction({ watch_status: 'watchlist' }, '已设为想看'); return; }
+        if (action?.dataset.action === 'batch-watching') { applyBatchAction({ watch_status: 'watching' }, '已设为在看'); return; }
+        if (action?.dataset.action === 'batch-watched') { applyBatchAction({ watch_status: 'watched' }, '已设为已看'); return; }
+        if (action?.dataset.action === 'batch-remove') { applyBatchAction({ watch_status: '' }, '已移出片单'); return; }
+        if (action?.dataset.action === 'copy-link') { copyCurrentLink(state.activeDetailId); return; }
+        if (action?.dataset.action === 'expand-cast') {
+            const full = parseJsonList(currentDetail?.cast_json);
+            if (full.length) action.closest('.modal-cast').innerHTML = `主演：${full.map(name => escapeHtml(name)).join(' / ')}`;
+            return;
+        }
+        if (action?.dataset.action === 'goto-channels') {
+            event.preventDefault();
+            document.getElementById('channels')?.scrollIntoView({ behavior: reduceMotionQuery.matches ? 'auto' : 'smooth', block: 'start' });
+            return;
+        }
         if (action?.dataset.action === 'retry') resetAndLoad();
         if (action?.dataset.action === 'retry-more') { state.hasMore = true; loadTitles(); }
         if (action?.dataset.action === 'retry-detail') showDetail(action.dataset.titleId);
@@ -1680,16 +2488,52 @@ function setupEvents() {
             renderRecentRow();
             showToast('已清空最近浏览');
         }
+        if (action?.dataset.action === 'imdb-import') importByImdb(state.search);
+        if (!event.target.closest('.admin-menu-wrap')) closeAdminMenu();
         if (!event.target.closest('.status-menu-wrap')) closeStatusMenus();
+    });
+
+    // 6.1：详情内切换观看地区 → 持久化并重渲染渠道列表；6.7：个人记录字段即时保存
+    document.addEventListener('change', event => {
+        if (event.target.id === 'viewing-region-select') {
+            state.viewingRegion = /^[A-Z]{2}$/.test(event.target.value) ? event.target.value : '';
+            try { localStorage.setItem('viewing_region_v1', state.viewingRegion); } catch (_) { /* 忽略存储失败 */ }
+            if (currentDetail) renderDetail(currentDetail);
+            return;
+        }
+        if (event.target.id === 'surprise-scope') {
+            state.surpriseScope = ['filters', 'watchlist', 'watching'].includes(event.target.value) ? event.target.value : 'filters';
+            try { localStorage.setItem('surprise_scope_v1', state.surpriseScope); } catch (_) { /* 忽略 */ }
+            return;
+        }
+        const field = event.target.closest('[data-personal]');
+        if (field) {
+            const titleId = field.closest('.personal-fields')?.dataset.titleId || state.activeDetailId;
+            if (titleId) savePersonalField(Number(titleId), field.dataset.personal, field.value);
+            return;
+        }
+        if (event.target.id === 'batch-priority') {
+            if (event.target.value !== '') {
+                applyBatchAction({ priority: Number(event.target.value) }, '优先级已更新');
+            }
+        }
     });
 
     document.getElementById('sync-button').addEventListener('click', triggerSync);
     document.getElementById('export-button')?.addEventListener('click', exportWatchlist);
+    document.getElementById('import-button')?.addEventListener('click', () => document.getElementById('import-file')?.click());
+    document.getElementById('import-file')?.addEventListener('change', importWatchlistFile);
+    document.getElementById('imdb-import-btn')?.addEventListener('click', importByImdb);
     document.getElementById('close-modal').addEventListener('click', closeModal);
     document.getElementById('surprise-btn')?.addEventListener('click', surprisePick);
     document.getElementById('nav-prev')?.addEventListener('click', () => navigateDetail(-1));
     document.getElementById('nav-next')?.addEventListener('click', () => navigateDetail(1));
     document.getElementById('close-shortcuts')?.addEventListener('click', () => toggleShortcuts(false));
+    document.getElementById('recent-toggle')?.addEventListener('click', () => toggleRecentRow());
+    // F14：点击帮助浮层空白处也可关闭
+    document.getElementById('shortcuts-overlay')?.addEventListener('click', event => {
+        if (event.target === event.currentTarget) toggleShortcuts(false);
+    });
     document.querySelectorAll('.view-toggle-btn').forEach(button => {
         button.addEventListener('click', () => setViewMode(button.dataset.view));
     });
@@ -1718,6 +2562,8 @@ function setupEvents() {
     });
     document.getElementById('region-filter').addEventListener('change', event => { state.region = event.target.value; resetAndLoad(); });
     document.getElementById('rating-filter').addEventListener('change', event => { state.rating = Number(event.target.value); resetAndLoad(); });
+    document.getElementById('genre-filter')?.addEventListener('change', event => { state.genre = event.target.value; resetAndLoad(); });
+    document.getElementById('runtime-filter')?.addEventListener('change', event => { state.maxRuntime = Number(event.target.value) || 0; resetAndLoad(); });
     document.getElementById('sort-filter').addEventListener('change', event => { state.sort_by = event.target.value; resetAndLoad(); });
     document.getElementById('sort-order-btn')?.addEventListener('click', () => {
         state.order = state.order === 'asc' ? 'desc' : 'asc';
@@ -1730,25 +2576,27 @@ function setupEvents() {
         const modalOpen = !document.getElementById('detail-modal').classList.contains('hidden');
         const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
         const shortcutsOpen = !document.getElementById('shortcuts-overlay')?.classList.contains('hidden');
-        if (event.key === '/' && !typing) {
+        // F14：详情或快捷键浮层打开时禁用全局快捷键，避免操作逃出当前浮层
+        if (event.key === '/' && !typing && !modalOpen && !shortcutsOpen) {
             event.preventDefault();
             searchInput.focus();
         }
         // 键盘帮助浮层：? 打开，Esc 关闭（优先于模态关闭）
-        if (event.key === '?' && !typing && !modalOpen) {
+        if (event.key === '?' && !typing && !modalOpen && !shortcutsOpen) {
             event.preventDefault();
             toggleShortcuts(true);
             return;
         }
         if (event.key === 'Escape') {
             if (shortcutsOpen) { toggleShortcuts(false); return; }
+            if (!document.getElementById('admin-menu')?.classList.contains('hidden')) { closeAdminMenu(true); return; }
             if (document.body.classList.contains('sidebar-open')) { window.__closeSidebar?.(); return; }
             if (document.body.classList.contains('wall-open')) { closeWall(); return; }
             if (document.querySelector('.status-menu:not(.hidden)')) closeStatusMenus();
             else closeModal();
         }
         // 海报墙锁屏开关 W
-        if ((event.key === 'w' || event.key === 'W') && !typing && !modalOpen) {
+        if ((event.key === 'w' || event.key === 'W') && !typing && !modalOpen && !shortcutsOpen) {
             event.preventDefault();
             if (document.body.classList.contains('wall-open')) closeWall();
             else openWall();
@@ -1762,11 +2610,15 @@ function setupEvents() {
             event.preventDefault();
             navigateDetail(event.key === 'ArrowLeft' ? -1 : 1);
         }
-        if (!modalOpen && (event.key === 'r' || event.key === 'R') && !typing) {
+        if (!modalOpen && (event.key === 'r' || event.key === 'R') && !typing && !shortcutsOpen) {
             event.preventDefault();
             surprisePick();
         }
-        if (event.key === 'Tab' && modalOpen) trapModalFocus(event);
+        if (event.key === 'Tab') {
+            if (shortcutsOpen) trapFocusWithin(document.getElementById('shortcuts-overlay'), event);
+            else if (document.body.classList.contains('sidebar-open')) trapFocusWithin(document.querySelector('body > .filter-panel.drawer-mode'), event);
+            else if (modalOpen) trapModalFocus(event);
+        }
     });
 
     window.addEventListener('online', () => {
@@ -1778,6 +2630,15 @@ function setupEvents() {
     if (!navigator.onLine) document.getElementById('offline-banner').classList.remove('hidden');
 
     // 前进/后退导航的滚动位置恢复
+    window.addEventListener('popstate', () => {
+        // F12：URL 是详情状态的唯一真实来源；后退关闭、前进重开。
+        const t = new URLSearchParams(window.location.search).get('t');
+        if (t && /^\d+$/.test(t)) {
+            if (String(state.detailId) !== t) showDetail(Number(t), { fromHistory: true });
+        } else if (!document.getElementById('detail-modal').classList.contains('hidden')) {
+            closeModal({ fromHistory: true });
+        }
+    });
     window.addEventListener('pageshow', event => {
         // bfcache 恢复：DOM 未重建，无需等待列表加载，直接恢复
         if (event.persisted && history.state?.scrollY) {
@@ -1790,16 +2651,30 @@ function setupEvents() {
         state.restoreScroll = history.state?.scrollY ?? null;
     }
     setupCardHoverPrefetch();
+
+    // 6.10 PWA：注册 Service Worker（离线外壳），注册失败不影响正常使用
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/sw.js').catch(() => { /* 忽略注册失败 */ });
+        });
+    }
 }
 
-function trapModalFocus(event) {
-    const panel = document.querySelector('.modal-panel');
-    const focusable = [...panel.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])')];
+/* F14：通用焦点陷阱 —— 详情弹层、快捷键帮助、移动端筛选抽屉共用 */
+function trapFocusWithin(container, event) {
+    if (!container) return;
+    const focusable = [...container.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')]
+        .filter(el => el.offsetParent !== null || el === document.activeElement);
     if (!focusable.length) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+}
+
+function trapModalFocus(event) {
+    // F14：导航按钮位于 panel 外，需纳入同一焦点循环
+    trapFocusWithin(document.getElementById('detail-modal'), event);
 }
 
 function setupInfiniteScroll() {
@@ -1828,7 +2703,7 @@ function setupBackToTop() {
         });
         ticking = true;
     }, { passive: true });
-    button.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+    button.addEventListener('click', () => window.scrollTo({ top: 0, behavior: reduceMotionQuery.matches ? 'auto' : 'smooth' }));
 }
 
 /* 卡片 hover 预取详情：仅桌面精确指针启用，hover 250ms 后预取，离开取消；命中后不重复请求 */
@@ -1841,6 +2716,7 @@ function setupCardHoverPrefetch() {
     grid.addEventListener('mouseover', event => {
         const card = event.target.closest('.title-card');
         if (!card) return;
+        if (state.batchMode) return; // 批量整理时不预取
         const id = card.dataset.titleId;
         if (id === hoveredId) return; // 同一张卡内移动，不重置计时
         hoveredId = id;
@@ -1874,6 +2750,7 @@ const WALL_SWITCH_MS = 15000;
 let wallTitles = [];
 let wallIndex = 0;
 let wallTimer = null;
+let wallRequestId = 0;
 
 function shuffleArray(array) {
     for (let i = array.length - 1; i > 0; i--) {
@@ -1913,6 +2790,8 @@ function renderWallBatch() {
 function startWallRotation() {
     stopWallRotation();
     wallTimer = setInterval(() => {
+        // 页面不可见时暂停轮换（CSS 降动态不能覆盖 JS 计时器）
+        if (document.hidden || reduceMotionQuery.matches) return;
         const overlay = document.getElementById('wall-overlay');
         overlay.classList.add('is-switching');
         setTimeout(() => {
@@ -1928,21 +2807,39 @@ function stopWallRotation() {
 
 async function enterWall() {
     const overlay = document.getElementById('wall-overlay');
+    const grid = document.getElementById('wall-grid');
+    const requestId = ++wallRequestId;
     overlay.classList.remove('hidden');
     overlay.setAttribute('aria-hidden', 'false');
     document.body.classList.add('wall-open');
     if (!wallTitles.length) {
+        grid.innerHTML = '<p class="wall-status">正在加载海报…</p>';
         try {
             const data = await api('/api/titles?limit=100&sort_by=rating&order=desc');
+            // 关闭后返回的迟到响应不再启动轮播
+            if (requestId !== wallRequestId || !document.body.classList.contains('wall-open')) return;
             wallTitles = shuffleArray((data.titles || []).map(t => sanitizeUrl(t.poster_url)).filter(Boolean));
             wallIndex = 0;
-        } catch { wallTitles = []; }
+        } catch {
+            if (requestId !== wallRequestId || !document.body.classList.contains('wall-open')) return;
+            wallTitles = [];
+            grid.innerHTML = '<div class="wall-status"><p>海报墙加载失败，请检查网络后重试</p><button type="button" class="btn-retry" id="wall-retry">重新加载</button><button type="button" class="btn-retry" id="wall-exit">返回浏览</button></div>';
+            document.getElementById('wall-retry')?.addEventListener('click', (e) => { e.stopPropagation(); enterWall(); });
+            document.getElementById('wall-exit')?.addEventListener('click', (e) => { e.stopPropagation(); closeWall(); });
+            return;
+        }
+    }
+    if (!wallTitles.length) {
+        grid.innerHTML = '<div class="wall-status"><p>暂无海报可展示</p><button type="button" class="btn-retry" id="wall-exit-empty">返回浏览</button></div>';
+        document.getElementById('wall-exit-empty')?.addEventListener('click', (e) => { e.stopPropagation(); closeWall(); });
+        return;
     }
     renderWallBatch();
     startWallRotation();
 }
 
 function exitWall() {
+    wallRequestId += 1; // 使在途请求失效
     const overlay = document.getElementById('wall-overlay');
     overlay.classList.add('hidden');
     overlay.setAttribute('aria-hidden', 'true');

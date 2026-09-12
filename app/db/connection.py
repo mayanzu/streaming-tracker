@@ -66,7 +66,7 @@ UNTRUSTED_RATING_CONDITION = f"NOT ({TRUSTED_RATING_CONDITION})"
 # 0 表示标题和简介都没有中文，从列表/统计中隐藏。
 ZH_CONDITION = "COALESCE(has_zh, 1) = 1"
 ZH_CONDITION_T = "COALESCE(t.has_zh, 1) = 1"
-# 仅"其他平台"（无六大平台）的作品默认不展示；用户显式筛选 provider=others 时不过滤。
+# 仅"其他平台"（无六大平台）的作品默认不展示；播放平台只在详情中展示，不再作为筛选项。
 _PRIMARY_PROVIDER_SQL = ",".join(f"'{name}'" for name in PROVIDERS)
 PRIMARY_PROVIDER_CONDITION = (
     "EXISTS (SELECT 1 FROM title_provider_availability primary_av"

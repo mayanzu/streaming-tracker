@@ -7,17 +7,18 @@ from pydantic import BaseModel, Field
 
 from app.db import (
     check_database,
-    count_titles,
     export_watchlist,
-    get_providers,
     get_recent_releases,
     get_stats,
     get_title_detail,
     get_titles,
+    import_watchlist,
+    update_title_preference,
     update_title_status,
+    update_titles_batch,
 )
 from app.related import get_related_titles_async
-from app.config import MAIN_FILTER_PROVIDERS, PROVIDERS, SYNC_ENABLED, TMDB_API_KEY
+from app.config import SYNC_ENABLED, TMDB_API_KEY
 from app.scheduler import get_scheduler_status
 from app.importer import TitleImportError, import_title_by_imdb
 from app.sync import get_sync_state, sync_new_titles
@@ -27,6 +28,20 @@ router = APIRouter()
 
 class WatchStatusUpdate(BaseModel):
     watch_status: Literal["", "watchlist", "watching", "watched"]
+
+
+class PreferenceUpdate(BaseModel):
+    """6.7 我的记录：优先级 / 备注 / 个人评分（均可选，只更新传入字段）。"""
+    priority: int | None = Field(None, ge=0, le=2)
+    note: str | None = Field(None, max_length=200)
+    personal_rating: float | None = Field(None, ge=0, le=10)
+
+
+class BatchUpdate(BaseModel):
+    """6.7 批量操作：同一状态/优先级应用到多部作品。"""
+    ids: list[int] = Field(..., min_length=1, max_length=200)
+    watch_status: Literal["", "watchlist", "watching", "watched"] | None = None
+    priority: int | None = Field(None, ge=0, le=2)
 
 
 class TitleImportRequest(BaseModel):
@@ -116,20 +131,24 @@ async def ready(request: Request, response: Response):
 def list_titles(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
-    provider: str = Query(None),
-    sort_by: str = Query("release_date", pattern="^(rating|release_date)$"),
+    sort_by: str = Query("release_date", pattern="^(rating|release_date|updated_at|priority)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     title_type: str = Query(None, alias="type", pattern="^(movie|tv)?$"),
     search: str = Query(None, max_length=100),
     region: str = Query(None, pattern="^[A-Za-z]{2}$"),
     min_rating: float = Query(None, ge=0, le=10),
     watch_status: str = Query(None, pattern="^(watchlist|watching|watched)?$"),
+    genre: str = Query(None, max_length=40),
+    max_runtime: int = Query(None, ge=30, le=500),
+    exclude_watched: bool = Query(False),
+    released_after: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     return get_titles(
-        page=page, limit=limit, provider=provider,
+        page=page, limit=limit,
         sort_by=sort_by, order=order, title_type=title_type,
         search=search, region=region, min_rating=min_rating,
-        watch_status=watch_status,
+        watch_status=watch_status, genre=genre, max_runtime=max_runtime,
+        exclude_watched=exclude_watched, released_after=released_after,
     )
 
 
@@ -172,7 +191,21 @@ async def get_related(title_id: int, limit: int = Query(12, ge=1, le=24)):
 @router.get("/api/watchlist/export")
 def export_list():
     items = export_watchlist()
-    return {"count": len(items), "items": items}
+    return {"schema_version": 1, "exported_at": datetime.now(timezone.utc).isoformat(),
+            "count": len(items), "items": items}
+
+
+class WatchlistImportRequest(BaseModel):
+    items: list = Field(default_factory=list, max_length=5000)
+
+
+@router.post("/api/watchlist/import")
+def import_list(payload: WatchlistImportRequest):
+    try:
+        result = import_watchlist(payload.items)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"schema_version": 1, **result}
 
 
 @router.get("/api/releases")
@@ -189,19 +222,31 @@ def set_title_status(title_id: int, payload: WatchStatusUpdate):
     return title
 
 
-@router.get("/api/providers")
-def list_providers():
-    providers = get_providers()
-    discovered = [
-        item["provider_name"] for item in providers
-        if item["provider_name"] not in PROVIDERS
-    ]
-    return {
-        "providers": providers,
-        "available": list(dict.fromkeys((*MAIN_FILTER_PROVIDERS, *discovered))),
-        # 只用轻量 COUNT，避免为 total 重复执行完整 get_stats 聚合
-        "total": count_titles(),
-    }
+@router.patch("/api/titles/{title_id}/preference")
+def set_title_preference(title_id: int, payload: PreferenceUpdate):
+    title = update_title_preference(
+        title_id,
+        priority=payload.priority,
+        note=payload.note,
+        personal_rating=payload.personal_rating,
+    )
+    if not title:
+        raise HTTPException(status_code=404, detail="作品未加入片单，无法记录个人条目")
+    return title
+
+
+@router.patch("/api/titles/batch")
+def batch_update_titles(payload: BatchUpdate):
+    if payload.watch_status is None and payload.priority is None:
+        raise HTTPException(status_code=422, detail="watch_status 与 priority 至少提供一个")
+    try:
+        return update_titles_batch(
+            payload.ids,
+            watch_status=payload.watch_status,
+            priority=payload.priority,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/api/stats")

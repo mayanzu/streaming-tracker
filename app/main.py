@@ -141,6 +141,16 @@ async def serve_static(file_path: str, request: Request):
     )
 
 
+@app.get("/sw.js")
+async def service_worker():
+    # Service Worker 必须在根路径提供才能控制全站；显式允许 scope=/
+    return FileResponse(
+        str(STATIC_DIR / "sw.js"),
+        media_type="text/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/")
 async def root():
     return FileResponse(

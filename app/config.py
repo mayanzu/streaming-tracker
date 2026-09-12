@@ -106,6 +106,8 @@ PENDING_RETRY_DAYS = tuple(
     if value.strip()
 )
 PROVIDER_STALE_DAYS = int(os.getenv("PROVIDER_STALE_DAYS", "45"))
+# 说明（7.5）：渠道失效不再按时钟全局过期（会误停用未被本轮同步覆盖的老片）。
+# 该配置仅为兼容旧 .env 保留；否定结论由 backfill_channels 单片核验成功后发布。
 
 # 网站进程内自动同步配置
 SYNC_ENABLED = os.getenv("SYNC_ENABLED", "true").lower() in ("1", "true", "yes", "on")

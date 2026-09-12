@@ -122,6 +122,7 @@ def _load_local_sync(media_type, tmdb_ids, limit):
         provider_map = _fetch_provider_map(cursor, [item["id"] for item in ordered])
         for item in ordered:
             item["providers"] = provider_map.get(item["id"], [])
+            item["reason"] = "TMDB 同看推荐"
         return ordered
     finally:
         conn.close()

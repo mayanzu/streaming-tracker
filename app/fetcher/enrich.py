@@ -63,7 +63,7 @@ async def _fetch_details(candidate, client):
             (details.get("external_ids") or {}).get("imdb_id")
             or title.get("imdb_id")
         )
-        providers, provider_regions = _provider_availability(
+        providers, provider_regions, provider_labels = _provider_availability(
             details.get("watch/providers") or {}
         )
         if providers:
@@ -74,6 +74,11 @@ async def _fetch_details(candidate, client):
             for provider, values in provider_regions.items():
                 regions[provider] = list(dict.fromkeys(
                     (regions.get(provider) or []) + values
+                ))
+            labels = title.setdefault("provider_labels", {})
+            for provider, values in provider_labels.items():
+                labels[provider] = list(dict.fromkeys(
+                    (labels.get(provider) or []) + values
                 ))
         title["origin_countries"] = _origin_countries_from_details(details)
         title["director"], title["cast_json"] = _credits_from_details(details)

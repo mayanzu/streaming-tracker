@@ -85,6 +85,9 @@ def _merge_candidate(target, incoming):
     regions = target.setdefault("provider_regions", {})
     for provider, values in (incoming.get("provider_regions") or {}).items():
         regions[provider] = list(dict.fromkeys((regions.get(provider) or []) + values))
+    labels = target.setdefault("provider_labels", {})
+    for provider, values in (incoming.get("provider_labels") or {}).items():
+        labels[provider] = list(dict.fromkeys((labels.get(provider) or []) + values))
     target["discovery_channels"] = list(dict.fromkeys(
         (target.get("discovery_channels") or []) + (incoming.get("discovery_channels") or [])
     ))

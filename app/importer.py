@@ -85,5 +85,6 @@ async def import_title_by_imdb(imdb_reference):
             "rating_votes": title.get("rating_votes"),
             "providers": title.get("providers") or [],
             "provider_regions": title.get("provider_regions") or {},
+            "provider_labels": title.get("provider_labels") or {},
             "pending_reason": title.get("pending_reason"),
         }

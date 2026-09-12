@@ -139,21 +139,28 @@ def insert_title(title_data, conn=None):
 
         observed_at = title_data.get("last_seen_at") or _utc_now()
         provider_regions = title_data.get("provider_regions") or {}
+        provider_labels = title_data.get("provider_labels") or {}
         for provider in title_data.get("providers") or []:
             cursor.execute(
                 "INSERT OR IGNORE INTO title_providers (title_id, provider_name) VALUES (?,?)",
                 (title_id, provider),
             )
             regions = provider_regions.get(provider) or [""]
+            labels = provider_labels.get(provider) or []
+            # 同一内部渠道可能对应多个原始名称（如 MUBI / Criterion 同属 others），
+            # 拼存于行内，详情读出时再拆分，避免丢失具体平台信息。
+            label = " / ".join(dict.fromkeys(labels)) if labels else ""
             for region in regions:
                 cursor.execute("""
                     INSERT INTO title_provider_availability
                         (title_id, provider_name, region, monetization_type,
-                         first_seen_at, last_seen_at, is_active)
-                    VALUES (?, ?, ?, 'mixed', ?, ?, 1)
+                         first_seen_at, last_seen_at, is_active, provider_label)
+                    VALUES (?, ?, ?, 'mixed', ?, ?, 1, ?)
                     ON CONFLICT(title_id, provider_name, region, monetization_type)
-                    DO UPDATE SET last_seen_at=excluded.last_seen_at, is_active=1
-                """, (title_id, provider, region, observed_at, observed_at))
+                    DO UPDATE SET last_seen_at=excluded.last_seen_at, is_active=1,
+                        provider_label=COALESCE(NULLIF(excluded.provider_label, ''),
+                            title_provider_availability.provider_label)
+                """, (title_id, provider, region, observed_at, observed_at, label))
 
         if countries_supplied:
             cursor.execute("DELETE FROM title_countries WHERE title_id=?", (title_id,))

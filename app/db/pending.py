@@ -4,7 +4,6 @@ import json
 import math
 from datetime import date, datetime, timedelta, timezone
 
-from app.config import PROVIDER_STALE_DAYS
 from app.db.connection import get_db_connection
 from app.db.titles import insert_title
 from app.db.utils import ARCHIVE_RETRY_DAYS, _retry_delay_days, _utc_now
@@ -74,7 +73,7 @@ def _write_pending(cursor, title_data, observed_at):
     ))
 
 
-def persist_sync_batch(titles, pending_titles, provider_stale_days=PROVIDER_STALE_DAYS):
+def persist_sync_batch(titles, pending_titles):
     """Open/use/commit/close SQLite in one worker thread and return structured outcomes."""
     conn = get_db_connection()
     outcomes = {
@@ -141,14 +140,17 @@ def persist_sync_batch(titles, pending_titles, provider_stale_days=PROVIDER_STAL
                     f"pending {title_data.get('title', '?')}: {type(exc).__name__}: {exc}"
                 )
 
-        stale_before = (datetime.now(timezone.utc) - timedelta(days=provider_stale_days)).isoformat()
-        cursor.execute("""
-            UPDATE title_provider_availability
-            SET is_active=0
-            WHERE is_active=1 AND last_seen_at < ?
-        """, (stale_before,))
-        outcomes["provider_expired"] = max(cursor.rowcount, 0)
+        # 7.5 核验策略：同步只做 upsert（渠道集合为发现渠道 + 详情合并），
+        # 不能据此发布“渠道已失效”的否定结论。按时间全局过期会让未被本轮
+        # 覆盖的老片被误停用，因此这里不再做时钟过期；否定结论只在
+        # backfill_channels 单片核验成功、且该渠道未出现时发布。
+        outcomes["provider_expired"] = 0
         conn.commit()
+        try:
+            from app.db.queries import invalidate_catalog_caches
+            invalidate_catalog_caches()
+        except Exception:
+            pass
         return outcomes
     except Exception:
         conn.rollback()

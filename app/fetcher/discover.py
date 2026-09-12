@@ -49,9 +49,10 @@ async def discover_imdb_title(imdb_reference, client=None):
             {"language": "en-US"},
             client=client,
         )
-        providers, provider_regions = _provider_availability(watch)
+        providers, provider_regions, provider_labels = _provider_availability(watch)
         candidate["providers"] = providers
         candidate["provider_regions"] = provider_regions
+        candidate["provider_labels"] = provider_labels
         return candidate
     finally:
         if owns_client:

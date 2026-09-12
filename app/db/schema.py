@@ -57,6 +57,7 @@ def init_db():
             "seasons": "INTEGER",
             "episodes": "INTEGER",
             "trailer_key": "TEXT",
+            "providers_checked_at": "TEXT",
         },
     )
 
@@ -72,8 +73,7 @@ def init_db():
     _ensure_title_identity_schema(conn, cursor)
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS title_provider_availability (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS title_provider_availability (            id INTEGER PRIMARY KEY AUTOINCREMENT,
             title_id INTEGER NOT NULL,
             provider_name TEXT NOT NULL,
             region TEXT NOT NULL DEFAULT '',
@@ -85,6 +85,9 @@ def init_db():
             UNIQUE(title_id, provider_name, region, monetization_type)
         )
     """)
+    # provider_label：TMDB 原始展示名（如 MUBI、iQIYI）。老数据为 NULL，
+    # 详情页回退显示“其他平台”，下次同步命中同一渠道时自动回填。
+    _ensure_columns(cursor, "title_provider_availability", {"provider_label": "TEXT"})
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS title_countries (
@@ -149,6 +152,17 @@ def init_db():
             PRIMARY KEY (tmdb_id, type)
         )
     """)
+    # 6.7 片单整理：优先级 / 备注 / 个人评分 / 观看日期（旧库自动补列）
+    _ensure_columns(
+        cursor,
+        "title_preferences",
+        {
+            "priority": "INTEGER NOT NULL DEFAULT 0",
+            "note": "TEXT",
+            "personal_rating": "REAL",
+            "watched_at": "TEXT",
+        },
+    )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sync_runs (
@@ -289,6 +303,7 @@ def _ensure_title_identity_schema(conn, cursor):
                 seasons INTEGER,
                 episodes INTEGER,
                 trailer_key TEXT,
+                providers_checked_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(tmdb_id, type)
             )
@@ -298,13 +313,15 @@ def _ensure_title_identity_schema(conn, cursor):
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
                 first_seen_at, last_seen_at, last_synced_at, countries_synced_at,
-                director, cast_json, genres_json, runtime, seasons, episodes, trailer_key, created_at
+                director, cast_json, genres_json, runtime, seasons, episodes, trailer_key,
+                providers_checked_at, created_at
             )
             SELECT
                 id, tmdb_id, imdb_id, title, original_title, type, overview, release_date,
                 poster_url, imdb_rating, rating_source, rating_votes, added_date,
                 first_seen_at, last_seen_at, last_synced_at, countries_synced_at,
-                director, cast_json, genres_json, runtime, seasons, episodes, trailer_key, created_at
+                director, cast_json, genres_json, runtime, seasons, episodes, trailer_key,
+                NULL, created_at
             FROM titles_old
         """)
         cursor.execute("""

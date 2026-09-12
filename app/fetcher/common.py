@@ -201,6 +201,9 @@ def _merge_candidate(target, incoming):
     regions = target.setdefault("provider_regions", {})
     for provider, values in (incoming.get("provider_regions") or {}).items():
         regions[provider] = list(dict.fromkeys((regions.get(provider) or []) + values))
+    labels = target.setdefault("provider_labels", {})
+    for provider, values in (incoming.get("provider_labels") or {}).items():
+        labels[provider] = list(dict.fromkeys((labels.get(provider) or []) + values))
     target["discovery_channels"] = list(dict.fromkeys(
         (target.get("discovery_channels") or []) + (incoming.get("discovery_channels") or [])
     ))
@@ -242,24 +245,33 @@ def _base_candidate_from_item(item, media_type, channel):
 
 
 def _provider_availability(payload):
-    """Collapse TMDB watch offers into six primary providers plus ``others``."""
+    """Collapse TMDB watch offers into six primary providers plus ``others``.
+
+    同时保留原始展示名（provider_labels：内部 key -> 去重后的 TMDB
+    provider_name 列表），供详情页展示“其他平台具体是哪个平台”。
+    """
     provider_by_id = {provider_id: name for name, provider_id in PROVIDERS.items()}
     providers = []
     provider_regions = {}
+    provider_labels = {}
     for region, offers in (payload.get("results") or {}).items():
         for field in MONETIZATION_FIELDS:
             for offer in offers.get(field) or []:
                 provider_id = offer.get("provider_id")
                 provider_name = provider_by_id.get(provider_id)
+                display_name = str(offer.get("provider_name") or "").strip()
                 if not provider_name:
-                    display_name = str(offer.get("provider_name") or "").strip().casefold()
-                    provider_name = PRIMARY_PROVIDER_ALIASES.get(display_name, "others")
+                    provider_name = PRIMARY_PROVIDER_ALIASES.get(display_name.casefold(), "others")
                 if provider_name not in providers:
                     providers.append(provider_name)
                 regions = provider_regions.setdefault(provider_name, [])
                 if region not in regions:
                     regions.append(region)
-    return providers, provider_regions
+                if display_name:
+                    labels = provider_labels.setdefault(provider_name, [])
+                    if display_name not in labels:
+                        labels.append(display_name)
+    return providers, provider_regions, provider_labels
 
 
 def _is_fresh(cached):
@@ -290,6 +302,7 @@ def _cached_title(candidate, cached):
     result = dict(cached)
     result["providers"] = candidate.get("providers") or []
     result["provider_regions"] = candidate.get("provider_regions") or {}
+    result["provider_labels"] = candidate.get("provider_labels") or {}
     result["discovery_channels"] = candidate.get("discovery_channels") or []
     result["added_date"] = cached.get("added_date") or candidate.get("added_date")
     result["last_seen_at"] = datetime.now(timezone.utc).isoformat()
