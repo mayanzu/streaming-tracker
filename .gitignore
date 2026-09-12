@@ -30,6 +30,9 @@ daemon*.json
 .workbuddy/
 .shots/
 
+# Review 证据文件：仅本地保留，不上传仓库（也不打进镜像）
+docs/reviews/
+
 # IDE
 .vscode/
 .idea/

@@ -6,6 +6,7 @@ data/*
 .git
 .gitignore
 *.md
+docs/
 venv/
 .venv/
 .claude/
