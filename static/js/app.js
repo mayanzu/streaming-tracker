@@ -1389,7 +1389,7 @@ function createTitleCard(title, rank = null, index = 0) {
             </div>
             <div class="card-info">
                 <h2 class="card-title">${highlightSearch(title.title, state.search)}</h2>
-                <div class="card-meta"><span>${typeLabel}</span>${rating ? '' : '<span class="meta-new">新片</span>'}<span>${escapeHtml(cardReleaseDate(title.release_date))}</span>${genre ? `<span class="meta-genre">${escapeHtml(genre)}</span>` : ''}${libraryMeta ? `<span>${escapeHtml(libraryMeta)}</span>` : ''}${state.search ? matchReasonHtml(title.match_reason) : ''}</div>
+                <div class="card-meta"><span>${typeLabel}</span>${rating ? '' : '<span class="meta-new">新片</span>'}<span class="meta-date">${escapeHtml(cardReleaseDate(title.release_date))}</span>${genre ? `<span class="meta-genre">${escapeHtml(genre)}</span>` : ''}${libraryMeta ? `<span>${escapeHtml(libraryMeta)}</span>` : ''}${state.search ? matchReasonHtml(title.match_reason) : ''}</div>
             </div>
         </button>
         <div class="status-menu-wrap">

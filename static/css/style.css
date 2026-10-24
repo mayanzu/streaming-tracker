@@ -23,6 +23,9 @@
     --accent-halo: rgba(223, 164, 125, .08);
     --accent-selection: rgba(223, 164, 125, .32);
     --accent-radial: rgba(223, 164, 125, .16);
+    /* 玻璃徽标：海报上的轻量胶囊底/描边（待开分等弱提示复用） */
+    --glass-bg: rgba(12, 11, 9, .55);
+    --glass-line: rgba(255, 255, 255, .18);
     --green: #a5cd86;
     --amber: #e0b45c;
     --danger: #dd7070;
@@ -706,6 +709,7 @@ p.sync-pill {
     }
     .title-card:hover .poster-wrap::before { opacity: 0; }
     .title-card:hover .poster-wrap::after { opacity: .6; }
+    .title-card:hover .poster-wrap img.is-loaded { filter: brightness(1.05); }
     .title-card:hover .card-title { color: var(--accent); }
     .title-card:hover .rank-badge { opacity: .25; }
 }
@@ -721,6 +725,14 @@ p.sync-pill {
 .poster-rating[data-tier="great"] .r-num { color: var(--green); }
 .poster-rating[data-tier="good"] .r-num { color: var(--amber); }
 .poster-rating small { color: rgba(255, 255, 255, .6); font-size: .62rem; font-weight: 600; letter-spacing: .02em; }
+/* 未开分降噪：评分是视觉焦点，“待开分”只做轻提示，不和分数抢同一层级 */
+.poster-rating.is-unrated {
+    min-width: 0; padding: 4px 8px;
+    border-color: var(--glass-line); background: var(--glass-bg);
+}
+.poster-rating.is-unrated .r-num {
+    color: var(--text-2); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .02em;
+}
 /* 5.2：状态不再用文字块遮挡海报，改为左上角 3px 色条；文字保留给读屏 */
 .status-badge {
     position: absolute; left: 0; top: 0; bottom: 0; z-index: 2; width: 3px; padding: 0;
@@ -753,6 +765,8 @@ p.sync-pill {
 /* N05：题材名过长省略，元数据不在字内折断 */
 .card-meta > .meta-genre { max-width: 6.5em; overflow: hidden; text-overflow: ellipsis; }
 .card-meta .meta-new { color: var(--text-3); }
+/* 默认按最近上映排序，日期比类型/题材更需要被看见 */
+.card-meta > .meta-date { color: var(--text-2); }
 /* 手机列表把手势评分放 meta 首项；桌面仍用右侧独立评分列 */
 .title-card.is-list .card-meta .meta-rating { display: none; }
 .card-meta span + span::before { content: "·"; margin-right: 7px; opacity: .6; }
@@ -876,12 +890,12 @@ mark.search-hit { background: rgba(223, 164, 125, .28); color: inherit; border-r
 .modal-close svg { width: 18px; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .modal-hero { position: relative; height: 200px; overflow: hidden; border-radius: var(--radius-lg) var(--radius-lg) 0 0; background: var(--surface-raised); }
 /* R-visual：虚化背景只保留薄层氛围，不再大面积压过标题 */
-.modal-hero-bg { position: absolute; inset: -16px; background: center 28% / cover; filter: blur(24px) saturate(.8) brightness(.8); opacity: .5; transform: scale(1.06); }
+.modal-hero-bg { position: absolute; inset: -16px; background: center 28% / cover; filter: blur(30px) saturate(.9) brightness(.62); opacity: .34; transform: scale(1.06); }
 .modal-hero::after {
     content: ""; position: absolute; inset: 0;
     background:
         radial-gradient(120% 90% at 18% 108%, var(--accent-radial), transparent 55%),
-        linear-gradient(to top, var(--surface) 4%, rgba(23, 22, 17, .3) 60%, rgba(23, 22, 17, .12));
+        linear-gradient(to top, var(--surface) 6%, rgba(23, 22, 17, .45) 58%, rgba(23, 22, 17, .18));
 }
 .modal-hero-content { position: absolute; z-index: 2; left: 286px; right: 72px; bottom: 30px; display: flex; align-items: flex-end; gap: 20px; }
 /* 4.1：评分并入 meta 信息行，hero 不再放大方块；无评分只写“新片 · 待开分” */
