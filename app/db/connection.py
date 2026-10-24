@@ -9,6 +9,7 @@ from app.config import (
     ASIAN_MIN_IMDB_VOTES,
     ASIAN_ORIGIN_COUNTRIES,
     DATABASE_URL,
+    MIN_IMDB_RATING,
     MIN_IMDB_VOTES,
     MIN_IMDB_VOTES_GRACE,
     NEW_TITLE_GRACE_DAYS,
@@ -37,6 +38,11 @@ ASIAN_ORIGIN_CONDITION_T = (
     " WHERE asian_c.title_id = t.id"
     f" AND asian_c.country_code IN ({_ASIAN_ORIGINS_SQL}))"
 )
+# 评分底线：目录只收录达到 MIN_IMDB_RATING 的作品。写入时由 enrich 过滤，
+# 读路径再校验一次，避免评分下跌后旧值永远留在列表里（曾出现 231 部 7.0→6.x 未下架）。
+_RATING_FLOOR = max(float(MIN_IMDB_RATING), 0)
+_RATING_FLOOR_SQL = f"{_RATING_FLOOR:g}"
+
 # 亚洲产地内容票数达标即可信（门槛低于 MIN_IMDB_VOTES），避免漏掉低票数亚洲剧集
 _ASIAN_RATING_BASE = (
     "imdb_rating IS NOT NULL AND rating_source IN ('imdb', 'omdb')"
@@ -47,17 +53,21 @@ _ASIAN_RATING_BASE_T = (
     f" AND COALESCE(t.rating_votes, 0) >= {_ASIAN_MIN_VOTES}"
 )
 TRUSTED_RATING_CONDITION = (
+    f"((imdb_rating >= {_RATING_FLOOR_SQL} AND ("
     "(imdb_rating IS NOT NULL AND rating_source IN ('imdb', 'omdb')"
     f" AND COALESCE(rating_votes, 0)"
-    f" >= CASE WHEN {_RECENT_WINDOW} THEN {_MIN_VOTES_GRACE} ELSE {_MIN_VOTES} END"
+    f" >= CASE WHEN {_RECENT_WINDOW} THEN {_MIN_VOTES_GRACE} ELSE {_MIN_VOTES} END)"
     f" OR ({_ASIAN_RATING_BASE} AND {ASIAN_ORIGIN_CONDITION})"
+    "))"
     f" OR (imdb_rating IS NULL AND {_RECENT_WINDOW}))"
 )
 TRUSTED_RATING_CONDITION_T = (
+    f"((t.imdb_rating >= {_RATING_FLOOR_SQL} AND ("
     "(t.imdb_rating IS NOT NULL AND t.rating_source IN ('imdb', 'omdb')"
     f" AND COALESCE(t.rating_votes, 0)"
-    f" >= CASE WHEN {_RECENT_WINDOW_T} THEN {_MIN_VOTES_GRACE} ELSE {_MIN_VOTES} END"
+    f" >= CASE WHEN {_RECENT_WINDOW_T} THEN {_MIN_VOTES_GRACE} ELSE {_MIN_VOTES} END)"
     f" OR ({_ASIAN_RATING_BASE_T} AND {ASIAN_ORIGIN_CONDITION_T})"
+    "))"
     f" OR (t.imdb_rating IS NULL AND {_RECENT_WINDOW_T}))"
 )
 UNTRUSTED_RATING_CONDITION = f"NOT ({TRUSTED_RATING_CONDITION})"

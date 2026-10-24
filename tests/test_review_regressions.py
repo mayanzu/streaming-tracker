@@ -12,7 +12,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _tmp = tempfile.mkdtemp(prefix="streaming-test-")
-os.environ["DATABASE_URL"] = os.path.join(_tmp, "test.db")
+os.environ.setdefault("DATABASE_URL", os.path.join(_tmp, "test.db"))
 
 from app.db.queries import (  # noqa: E402
     export_watchlist,

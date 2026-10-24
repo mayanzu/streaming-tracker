@@ -47,9 +47,6 @@ def insert_title(title_data, conn=None):
     countries_synced_at = title_data.get("countries_synced_at")
     if countries_supplied and not countries_synced_at:
         countries_synced_at = title_data.get("last_synced_at") or _utc_now()
-    has_zh = None
-    if (title_data.get("title") or "").strip() or (title_data.get("overview") or "").strip():
-        has_zh = _has_chinese(title_data.get("title"), title_data.get("overview"))
     if rating is None:
         release_date = title_data.get("release_date")
         in_grace = False
@@ -70,10 +67,32 @@ def insert_title(title_data, conn=None):
         if owns_conn:
             cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
-            "SELECT id FROM titles WHERE tmdb_id = ? AND type = ?",
+            "SELECT id, has_zh, title, overview FROM titles WHERE tmdb_id = ? AND type = ?",
             (title_data["tmdb_id"], title_data["type"]),
         )
         existing = cursor.fetchone()
+        if existing:
+            # 翻译偶发失败（如 Google 429）时，enrich 会退回英文原文；不能让它覆盖
+            # 已翻译的中文，否则 has_zh 变 0，作品会从列表里消失（review 2026-10-24）。
+            previous_title = existing["title"] or ""
+            previous_overview = existing["overview"] or ""
+            incoming_title = title_data.get("title") or ""
+            incoming_overview = title_data.get("overview") or ""
+            if (
+                previous_title and incoming_title
+                and _has_chinese(previous_title) and not _has_chinese(incoming_title)
+            ):
+                title_data = dict(title_data)
+                title_data["title"] = previous_title
+            if (
+                previous_overview and incoming_overview
+                and _has_chinese(previous_overview) and not _has_chinese(incoming_overview)
+            ):
+                title_data = dict(title_data)
+                title_data["overview"] = previous_overview
+        has_zh = None
+        if (title_data.get("title") or "").strip() or (title_data.get("overview") or "").strip():
+            has_zh = _has_chinese(title_data.get("title"), title_data.get("overview"))
 
         if existing:
             cursor.execute("""

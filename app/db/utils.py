@@ -51,7 +51,10 @@ def _retry_delay_days(reason, attempt_count):
     30 天空转一次最贵的 TMDB 详情调用。手动 import 与达标入库仍会清掉 pending。
     """
     if reason == "low_rating":
-        if attempt_count > 6:
+        # 评分跌破门槛后极少在短期内翻盘；确认 2 次即归档。
+        # 原阈值 6 次在 4.5 万条积压 + 每日 500 条的上限下永远跑不完，
+        # 队列会长期保持“全量到期”，每天空烧 TMDB 详情配额（review 2026-10-24）。
+        if attempt_count > 2:
             return None
         return max(PENDING_RETRY_DAYS[-1] if PENDING_RETRY_DAYS else 30, 30)
     if reason == "awaiting_rating":

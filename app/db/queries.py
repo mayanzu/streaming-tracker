@@ -882,28 +882,39 @@ def get_stats():
     try:
         cursor = conn.cursor()
 
-        cursor.execute(f"SELECT COUNT(*) as total FROM titles t WHERE {DEFAULT_VISIBILITY_CONDITION_T}")
+        # 可见性条件含相关 EXISTS，单次评估约 0.4s；统计里要复用十余次，
+        # 直接重复会让本接口在这块 USB2 库上跑到 14s（review 2026-10-24）。
+        # 先物化成临时表，后续聚合全部 JOIN 它。
+        cursor.execute("CREATE TEMP TABLE IF NOT EXISTS _stats_visible (id INTEGER PRIMARY KEY)")
+        cursor.execute("DELETE FROM _stats_visible")
+        cursor.execute(
+            "INSERT INTO _stats_visible (id) SELECT t.id FROM titles t "
+            f"WHERE {DEFAULT_VISIBILITY_CONDITION_T}"
+        )
+
+        cursor.execute("SELECT COUNT(*) as total FROM _stats_visible")
         total = cursor.fetchone()["total"]
 
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT t.type, COUNT(*) as count
             FROM titles t
-            WHERE {DEFAULT_VISIBILITY_CONDITION_T}
+            JOIN _stats_visible v ON v.id = t.id
             GROUP BY t.type
         """)
         by_type = {row["type"]: row["count"] for row in cursor.fetchall()}
 
         cursor.execute(
-            f"SELECT AVG(t.imdb_rating) as avg_rating FROM titles t WHERE {DEFAULT_VISIBILITY_CONDITION_T}"
+            "SELECT AVG(t.imdb_rating) as avg_rating FROM titles t "
+            "JOIN _stats_visible v ON v.id = t.id"
         )
         avg = cursor.fetchone()["avg_rating"]
 
         week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         cursor.execute(
-            f"""
+            """
             SELECT COUNT(*) AS count FROM titles t
-            WHERE {DEFAULT_VISIBILITY_CONDITION_T}
-              AND t.first_seen_at IS NOT NULL
+            JOIN _stats_visible v ON v.id = t.id
+            WHERE t.first_seen_at IS NOT NULL
               AND t.first_seen_at >= ?
             """,
             (week_ago,),
@@ -916,11 +927,11 @@ def get_stats():
         # 同一作品携带多个别名（如 Science Fiction + Sci-Fi & Fantasy）只计一次。
         genres = []
         try:
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT t.id AS title_id, je.value AS name
-                FROM titles t, json_each(t.genres_json) je
-                WHERE {DEFAULT_VISIBILITY_CONDITION_T}
-                  AND t.genres_json IS NOT NULL
+                FROM titles t
+                JOIN _stats_visible v ON v.id = t.id, json_each(t.genres_json) je
+                WHERE t.genres_json IS NOT NULL
                   AND json_valid(t.genres_json)
             """)
             genre_titles = {}
@@ -937,32 +948,34 @@ def get_stats():
             genres = []
 
         cursor.execute(
-            f"""
+            """
             SELECT COUNT(*) AS count FROM titles t
-            WHERE {DEFAULT_VISIBILITY_CONDITION_T}
-              AND t.providers_checked_at IS NOT NULL
+            JOIN _stats_visible v ON v.id = t.id
+            WHERE t.providers_checked_at IS NOT NULL
             """
         )
         channels_done = cursor.fetchone()["count"]
 
         cursor.execute(
-            f"SELECT MAX(t.added_date) as last_update FROM titles t WHERE {DEFAULT_VISIBILITY_CONDITION_T}"
+            "SELECT MAX(t.added_date) as last_update FROM titles t "
+            "JOIN _stats_visible v ON v.id = t.id"
         )
         last_update = cursor.fetchone()["last_update"]
 
         cursor.execute(
-            f"SELECT MAX(t.last_synced_at) as last_synced_at FROM titles t WHERE {DEFAULT_VISIBILITY_CONDITION_T}"
+            "SELECT MAX(t.last_synced_at) as last_synced_at FROM titles t "
+            "JOIN _stats_visible v ON v.id = t.id"
         )
         last_synced_at = cursor.fetchone()["last_synced_at"]
 
         cursor.execute("SELECT COUNT(*) AS count FROM pending_titles")
         pending_count = cursor.fetchone()["count"]
 
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT tc.country_code, COUNT(DISTINCT tc.title_id) AS count
             FROM title_countries tc
             JOIN titles t ON t.id = tc.title_id
-            WHERE {DEFAULT_VISIBILITY_CONDITION_T}
+            JOIN _stats_visible v ON v.id = t.id
             GROUP BY tc.country_code
             ORDER BY count DESC, tc.country_code
         """)
@@ -998,15 +1011,15 @@ def get_stats():
 
         # D1：数据质量与核验进度聚合——只暴露能指导行动的字段，
         # 成功空结果（checked_empty）不等于失败，也不强迫制造渠道。
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT COALESCE(t.zh_quality, 'unknown') AS quality, COUNT(*) AS count
             FROM titles t
-            WHERE {DEFAULT_VISIBILITY_CONDITION_T}
+            JOIN _stats_visible v ON v.id = t.id
             GROUP BY COALESCE(t.zh_quality, 'unknown')
         """)
         zh_quality = {row["quality"]: row["count"] for row in cursor.fetchall()}
 
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT
                 SUM(CASE WHEN t.providers_checked_at IS NOT NULL
                           AND t.providers_checked_at >= datetime('now', '-30 days')
@@ -1021,14 +1034,15 @@ def get_stats():
                               WHERE a.title_id = t.id AND a.is_active = 1
                           ) THEN 1 ELSE 0 END) AS checked_empty
             FROM titles t
-            WHERE {DEFAULT_VISIBILITY_CONDITION_T}
+            JOIN _stats_visible v ON v.id = t.id
         """)
         provider_row = cursor.fetchone()
-        cursor.execute(f"""
-            SELECT COUNT(DISTINCT o.title_id) AS count
-            FROM title_watch_offers o
-            JOIN titles t ON t.id = o.title_id
-            WHERE o.is_active = 1 AND {DEFAULT_VISIBILITY_CONDITION_T}
+        cursor.execute("""
+            SELECT COUNT(*) AS count FROM _stats_visible v
+            WHERE EXISTS (
+                SELECT 1 FROM title_watch_offers o
+                WHERE o.title_id = v.id AND o.is_active = 1
+            )
         """)
         active_offer_titles = cursor.fetchone()["count"]
         provider_check = {
@@ -1058,7 +1072,8 @@ def get_stats():
         }
     finally:
         conn.close()
-    _cache_write(_stats_cache, result, 30)
+    # 统计是低频读、写操作会显式失效；30s 会让低频访问的站点几乎每次都要重算。
+    _cache_write(_stats_cache, result, 300)
     return result
 
 

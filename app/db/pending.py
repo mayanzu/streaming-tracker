@@ -4,6 +4,7 @@ import json
 import math
 from datetime import date, datetime, timedelta, timezone
 
+from app.config import MIN_IMDB_RATING
 from app.db.connection import get_db_connection
 from app.db.titles import insert_title
 from app.db.utils import ARCHIVE_RETRY_DAYS, _retry_delay_days, _utc_now
@@ -73,13 +74,47 @@ def _write_pending(cursor, title_data, observed_at):
     ))
 
 
+def _demote_low_rating_titles(cursor, pending_titles, observed_at):
+    """评分跌破门槛时把真实分数写回目录，交给可见性条件下架。
+
+    旧逻辑只在待处理队列里记一笔，已入库行永远保留当年的 >=7 分，
+    出现“实际 6.8 仍在列表里”的僵尸条目（review 2026-10-24）。
+    只降不升：这里仅处理低分确认，回升由正常同步路径负责。
+    """
+    demoted = 0
+    for item in pending_titles:
+        if (item.get("pending_reason") or "") != "low_rating":
+            continue
+        rating = item.get("imdb_rating")
+        try:
+            rating = float(rating)
+        except (TypeError, ValueError):
+            continue
+        if rating >= MIN_IMDB_RATING:
+            continue
+        cursor.execute(
+            """
+            UPDATE titles
+            SET imdb_rating=?, rating_source=?, rating_votes=?, last_synced_at=?
+            WHERE tmdb_id=? AND type=?
+              AND imdb_rating IS NOT NULL AND imdb_rating >= ?
+            """,
+            (
+                rating, item.get("rating_source"), item.get("rating_votes"),
+                observed_at, item["tmdb_id"], item["type"], MIN_IMDB_RATING,
+            ),
+        )
+        demoted += cursor.rowcount
+    return demoted
+
+
 def persist_sync_batch(titles, pending_titles):
     """Open/use/commit/close SQLite in one worker thread and return structured outcomes."""
     conn = get_db_connection()
     outcomes = {
         "processed": 0, "skipped": 0, "inserted": 0,
         "updated": 0, "unchanged": 0, "provider_expired": 0,
-        "errors": [],
+        "demoted": 0, "errors": [],
     }
     observed_at = _utc_now()
     try:
@@ -145,6 +180,7 @@ def persist_sync_batch(titles, pending_titles):
         # 覆盖的老片被误停用，因此这里不再做时钟过期；否定结论只在
         # backfill_channels 单片核验成功、且该渠道未出现时发布。
         outcomes["provider_expired"] = 0
+        outcomes["demoted"] = _demote_low_rating_titles(cursor, pending_titles, observed_at)
         conn.commit()
         try:
             from app.db.queries import invalidate_catalog_caches
