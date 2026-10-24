@@ -1,7 +1,7 @@
 const state = {
     page: 1,
     limit: 40,
-    sort_by: 'rating',
+    sort_by: 'release_date',
     order: 'desc',
     type: '',
     search: '',
@@ -44,9 +44,9 @@ const state = {
 };
 
 /* D/R06：各页面保留自己的筛选状态；进入片单不继承发现页条件，返回时恢复。
- * WP-3：默认发现页按加权评分排序（imdb_rating 排序实际使用贝叶斯加权分）。 */
+ * 默认发现页按最近上映排序（release_date DESC）；“综合口碑”仍可在排序下拉中切换。 */
 const SECTION_DEFAULTS = {
-    discover: { type: '', search: '', region: '', rating: 0, genres: [], years: '', maxRuntime: 0, excludeWatched: false, releasedDays: 0, sort_by: 'rating', order: 'desc' },
+    discover: { type: '', search: '', region: '', rating: 0, genres: [], years: '', maxRuntime: 0, excludeWatched: false, releasedDays: 0, sort_by: 'release_date', order: 'desc' },
     library: { type: '', search: '', region: '', rating: 0, genres: [], years: '', maxRuntime: 0, excludeWatched: false, releasedDays: 0, sort_by: 'updated_at', order: 'desc' },
 };
 // 列表排序标签：chip、手机摘要与下拉统一使用（R10）
@@ -837,7 +837,7 @@ function updateUrl() {
     state.genres.forEach(name => params.append('genre', name));
     if (state.years) params.set('years', state.years);
     if (state.maxRuntime) params.set('max_runtime', String(state.maxRuntime));
-    const defaultSort = SECTION_DEFAULTS[state.section]?.sort_by || 'rating';
+    const defaultSort = SECTION_DEFAULTS[state.section]?.sort_by || 'release_date';
     if (state.sort_by !== defaultSort) params.set('sort', state.sort_by);
     if (state.order === 'asc') params.set('order', 'asc');
     if (state.section !== 'discover') params.set('view', state.section);
@@ -1804,6 +1804,9 @@ function buildFilterParams(extra = {}) {
     // URL 恢复/分享只持久化 fresh=天数，两个日期都从这里统一派生，保证各入口一致。
     if (state.releasedDays > 0) {
         params.set('released_after', releasedAfterDate(state.releasedDays));
+        params.set('released_before', todayDateString());
+    } else if (state.sort_by === 'release_date') {
+        // “最近上映”只列已上映作品，避免尚未上映的条目占据榜首
         params.set('released_before', todayDateString());
     }
     if (state.excludeWatched && !state.watchStatus) params.set('exclude_watched', 'true');
@@ -3234,7 +3237,7 @@ function resetSectionFilters() {
     state.maxRuntime = 0;
     state.excludeWatched = false;
     state.releasedDays = 0;
-    state.sort_by = SECTION_DEFAULTS[state.section]?.sort_by || 'rating';
+    state.sort_by = SECTION_DEFAULTS[state.section]?.sort_by || 'release_date';
     state.order = 'desc';
     resetAndLoad();
 }
@@ -3300,7 +3303,7 @@ function renderActiveFilters() {
     if (state.maxRuntime) chips.push(['时长', `${state.maxRuntime} 分钟内（含时长未知）`, '', () => { state.maxRuntime = 0; resetAndLoad(); }]);
     if (state.excludeWatched && !state.watchStatus) chips.push(['片单', '隐藏已看', '', () => { state.excludeWatched = false; resetAndLoad(); }]);
     if (state.releasedDays > 0) chips.push(['上映', `近 ${state.releasedDays} 天`, '', () => { state.releasedDays = 0; resetAndLoad(); }]);
-    const defaultSort = SECTION_DEFAULTS[state.section]?.sort_by || 'rating';
+    const defaultSort = SECTION_DEFAULTS[state.section]?.sort_by || 'release_date';
     if (state.sort_by !== defaultSort) {
         chips.push(['排序', SORT_LABELS[state.sort_by] || state.sort_by, '', () => {
             state.sort_by = defaultSort;
@@ -3367,7 +3370,7 @@ function updateFilterSummary() {
     if (state.maxRuntime > 0) parts.push(`≤${state.maxRuntime}分`);
     if (state.excludeWatched && !state.watchStatus) parts.push('隐藏已看');
     if (state.releasedDays > 0) parts.push(`近${state.releasedDays}天`);
-    const defaultSort = SECTION_DEFAULTS[state.section]?.sort_by || 'rating';
+    const defaultSort = SECTION_DEFAULTS[state.section]?.sort_by || 'release_date';
     if (state.sort_by !== defaultSort) {
         const sortLabel = SORT_LABELS[state.sort_by] || state.sort_by;
         parts.push(state.order === 'asc' ? `${sortLabel}↑` : `${sortLabel}↓`);
