@@ -21,6 +21,7 @@ from app.config import (
     TMDB_API_KEY,
 )
 from app.db import (
+    checkpoint_wal,
     claim_catalog_window,
     count_titles,
     count_untrusted_titles,
@@ -289,6 +290,10 @@ async def sync_new_titles(
             status, result["unique_discovered"], result["inserted"], result["updated"],
             result["unchanged"], result["pending"],
         )
+        # 收尾 checkpoint：把大事务写入的 WAL 回写主库并截断，
+        # 避免下次启动时集中 checkpoint 卡住（USB 机械盘上可能长达数分钟）。
+        wal_result = await asyncio.to_thread(checkpoint_wal)
+        logger.info("WAL checkpoint: %s", wal_result)
         return result
     except Exception as exc:
         logger.exception("TMDB sync failed")

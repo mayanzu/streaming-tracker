@@ -88,6 +88,25 @@ DEFAULT_VISIBILITY_CONDITION_T = (
 )
 
 
+def checkpoint_wal(mode="TRUNCATE"):
+    """把 WAL 回写进主库，并在 TRUNCATE 模式下截断，避免大事务遗留的巨大 WAL
+    拖慢下一次启动（SQLite 会在首个写事务前集中 checkpoint）。
+
+    返回 (busy, log_frames, checkpointed_frames)；参数非法或拿不到锁时返回 None，
+    调用方（同步流程）不应因此失败。
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+        return tuple(row) if row is not None else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def get_db_connection():
     db_dir = os.path.dirname(DATABASE_URL)
     if db_dir:

@@ -14,6 +14,7 @@ from app.db.connection import (
     TRUSTED_RATING_CONDITION,
     TRUSTED_RATING_CONDITION_T,
     UNTRUSTED_RATING_CONDITION,
+    checkpoint_wal,
     get_db,
     get_db_connection,
 )
