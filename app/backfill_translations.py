@@ -147,29 +147,27 @@ async def run(limit=0, concurrency=4, dry_run=False, titles=True, overviews=True
     if titles:
         candidates = _load_title_candidates(limit)
         logger.info("title translation candidates: %s", len(candidates))
-        updates = []
         for start in range(0, len(candidates), CHUNK_SIZE):
             chunk_updates, chunk_stats = await _translate_titles(
                 candidates[start:start + CHUNK_SIZE], concurrency,
             )
-            updates.extend(chunk_updates)
             for key, value in chunk_stats.items():
                 stats[key] = stats.get(key, 0) + value
-        if not dry_run:
-            _save_updates(updates)
+            if not dry_run:
+                saved = _save_updates(chunk_updates)
+                stats["titles_saved"] = stats.get("titles_saved", 0) + saved
     if overviews:
         candidates = _load_overview_candidates(limit)
         logger.info("overview translation candidates: %s", len(candidates))
-        updates = []
         for start in range(0, len(candidates), CHUNK_SIZE):
             chunk_updates, chunk_stats = await _translate_overviews(
                 candidates[start:start + CHUNK_SIZE], concurrency,
             )
-            updates.extend(chunk_updates)
             for key, value in chunk_stats.items():
                 stats[key] = stats.get(key, 0) + value
-        if not dry_run:
-            _save_updates(updates)
+            if not dry_run:
+                saved = _save_updates(chunk_updates)
+                stats["overviews_saved"] = stats.get("overviews_saved", 0) + saved
     logger.info("backfill_translations finished: %s", stats)
     return stats
 

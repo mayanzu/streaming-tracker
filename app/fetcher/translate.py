@@ -7,6 +7,7 @@
 
 import logging
 import re
+import time
 
 import httpx
 
@@ -35,10 +36,16 @@ def _google_gtx_translate(value: str) -> str:
         "dt": "t",
         "q": value[:800],
     }
-    response = httpx.get(
-        _GOOGLE_ENDPOINT, params=params, timeout=_GOOGLE_TIMEOUT,
-        headers={"User-Agent": "Mozilla/5.0"},
-    )
+    response = None
+    for attempt in range(2):
+        response = httpx.get(
+            _GOOGLE_ENDPOINT, params=params, timeout=_GOOGLE_TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if response.status_code == 429 and attempt == 0:
+            time.sleep(2.0)
+            continue
+        break
     response.raise_for_status()
     payload = response.json()
     segments = payload[0] if isinstance(payload, list) and payload else []
