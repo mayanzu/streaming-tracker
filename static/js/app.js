@@ -1344,6 +1344,12 @@ function cardYear(dateStr) {
     return (dateStr || '').slice(0, 4) || '年份待定';
 }
 
+/* 卡片展示完整上映日期，便于核对“最近上映”排序；旧数据只有年份时按原样显示。 */
+function cardReleaseDate(dateStr) {
+    const value = String(dateStr || '').trim();
+    return value || '日期待定';
+}
+
 function firstGenre(genresJson) {
     const list = parseJsonList(genresJson);
     return list.length ? genreZh(list[0]) : '';
@@ -1383,7 +1389,7 @@ function createTitleCard(title, rank = null, index = 0) {
             </div>
             <div class="card-info">
                 <h2 class="card-title">${highlightSearch(title.title, state.search)}</h2>
-                <div class="card-meta"><span>${typeLabel}</span>${rating ? '' : '<span class="meta-new">新片</span>'}<span>${escapeHtml(cardYear(title.release_date))}</span>${genre ? `<span class="meta-genre">${escapeHtml(genre)}</span>` : ''}${libraryMeta ? `<span>${escapeHtml(libraryMeta)}</span>` : ''}${state.search ? matchReasonHtml(title.match_reason) : ''}</div>
+                <div class="card-meta"><span>${typeLabel}</span>${rating ? '' : '<span class="meta-new">新片</span>'}<span>${escapeHtml(cardReleaseDate(title.release_date))}</span>${genre ? `<span class="meta-genre">${escapeHtml(genre)}</span>` : ''}${libraryMeta ? `<span>${escapeHtml(libraryMeta)}</span>` : ''}${state.search ? matchReasonHtml(title.match_reason) : ''}</div>
             </div>
         </button>
         <div class="status-menu-wrap">
