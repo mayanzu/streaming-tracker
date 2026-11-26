@@ -2,10 +2,13 @@
 
 import json
 import math
+import os
 import re
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
+
+from app.config import RATING_PRIOR_MEAN, RATING_PRIOR_VOTES
 
 from app.db.connection import (
     ASIAN_ORIGIN_CONDITION_T,
@@ -1108,8 +1111,214 @@ def _json_list(value):
 
 
 _RELATED_CACHE_TTL = 300
+_RELATED_POOL_TTL = 600
 _related_cache = {}
+_related_pool_cache = {}
 _related_cache_lock = threading.Lock()
+
+# 形式/载体边界题材：不同载体之间（如动画片与真人片、纪录片与剧情片）施加互斥惩罚
+_FORMAT_GENRES = frozenset({"动画", "纪录", "真人秀", "脱口秀"})
+_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]+")
+_LATIN_WORD_RE = re.compile(r"[a-z]{3,}")
+_TEXT_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "his", "her", "she",
+    "they", "their", "them", "into", "after", "when", "where", "who", "whom",
+    "whose", "what", "which", "are", "was", "were", "been", "being", "has",
+    "have", "had", "but", "not", "out", "one", "two", "new", "all", "about",
+    "life", "world", "story", "film", "movie", "series", "season", "episode",
+})
+
+
+def _extract_text_tokens(title, overview):
+    """提取片名 + 简介的中文 2-gram 与英文关键词集合，用于无题材兜底及剧情语义匹配。"""
+    text = f"{title or ''} {(overview or '')[:260]}"
+    if not text.strip():
+        return frozenset()
+    tokens = set()
+    for run in _CJK_RUN_RE.findall(text):
+        for idx in range(len(run) - 1):
+            tokens.add(run[idx:idx + 2])
+    for word in _LATIN_WORD_RE.findall(text.lower()):
+        if word not in _TEXT_STOPWORDS:
+            tokens.add(word)
+    return frozenset(tokens)
+
+
+def _extract_franchise_prefix(title):
+    """提取系列作品公共前缀（如“蝙蝠侠：黑暗骑士”→“蝙蝠侠”、“沙丘2”→“沙丘”）。"""
+    raw = str(title or "").strip()
+    if not raw:
+        return ""
+    raw = re.sub(r"[（(]\s*第?[一二三四五六七八九十百\d]+[季部集]?\s*[）)]$", "", raw).strip()
+    head = re.split(r"[：:]", raw, maxsplit=1)[0].strip()
+    head = re.sub(
+        r"(?:\s*第[一二三四五六七八九十百\d]+[季部集]|\s+(?:[2-9]|1[0-9]|II|III|IV|V|VI|VII|VIII|IX))$",
+        "",
+        head,
+    ).strip()
+    head = re.sub(r"(?<=[\u4e00-\u9fff])[2-9]$", "", head).strip()
+    normalized = re.sub(r"\s+", " ", head).lower()
+    cjk_count = sum(len(part) for part in _CJK_RUN_RE.findall(normalized))
+    latin_count = sum(len(part) for part in re.findall(r"[a-z]", normalized))
+    if cjk_count >= 3 or (cjk_count == 0 and latin_count >= 5):
+        return normalized
+    return ""
+
+
+def _bayesian_quality_bonus(rating, votes):
+    """按全站一致的贝叶斯评分给高口碑佳作适度加分 [0, 1.2]，拉高 7.0 边缘片差距。"""
+    if rating is None:
+        return 0.0
+    m = max(float(RATING_PRIOR_VOTES), 0.0)
+    c = float(RATING_PRIOR_MEAN)
+    v = max(float(votes or 0), 0.0)
+    bayes = ((v * float(rating)) + (m * c)) / (v + m) if m > 0 else float(rating)
+    return max(0.0, min(1.2, (bayes - 7.0) * 0.6))
+
+
+def _file_stat_sig(path, *, zero_size_ignores_mtime=False):
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+        if zero_size_ignores_mtime and st.st_size == 0:
+            return (0, 0)
+        return (st.st_size, st.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def _db_change_fingerprint(cursor, media_type):
+    """低开销（<1ms）库变更指纹：覆盖主库 header 计数器、主库/WAL stat 与同类型数量/最大 id。"""
+    db_path = ""
+    for row in cursor.execute("PRAGMA database_list").fetchall():
+        if row["name"] == "main":
+            db_path = row["file"] or ""
+            break
+    change_counter = None
+    if db_path and os.path.exists(db_path):
+        try:
+            with open(db_path, "rb") as handle:
+                handle.seek(24)
+                header = handle.read(4)
+                if len(header) == 4:
+                    change_counter = int.from_bytes(header, "big")
+        except OSError:
+            change_counter = None
+    row = cursor.execute(
+        "SELECT COUNT(*) AS cnt, COALESCE(MAX(id), 0) AS max_id FROM titles WHERE type = ?",
+        (media_type,),
+    ).fetchone()
+    # 空 WAL（st_size == 0）在每次只读连接关闭时都可能刷新 mtime，忽略其 mtime 避免误判库变更
+    return (
+        db_path,
+        change_counter,
+        _file_stat_sig(db_path),
+        _file_stat_sig(f"{db_path}-wal", zero_size_ignores_mtime=True) if db_path else None,
+        int(row["cnt"] or 0),
+        int(row["max_id"] or 0),
+    )
+
+
+def _get_related_pool(cursor, media_type, fingerprint):
+    """构建并缓存按 type 划分的可见候选特征池与 IDF 表，避免每次请求全表扫描解析 JSON。"""
+    now = time.monotonic()
+    with _related_cache_lock:
+        cached = _related_pool_cache.get(media_type)
+        if (
+            cached is not None
+            and cached["fingerprint"] == fingerprint
+            and now - cached["built_at"] < _RELATED_POOL_TTL
+        ):
+            return cached
+
+    cursor.execute(f"""
+        SELECT t.id, t.tmdb_id, t.type, t.title, t.original_title, t.release_date,
+               t.poster_url, t.imdb_rating, t.rating_votes, t.genres_json,
+               t.cast_json, t.director, t.overview
+        FROM titles t
+        WHERE t.type = ?
+          AND {DEFAULT_VISIBILITY_CONDITION_T}
+    """, (media_type,))
+    rows = cursor.fetchall()
+    candidate_ids = [row["id"] for row in rows]
+    country_map = _fetch_country_map(cursor, candidate_ids)
+    provider_map = _fetch_provider_map(cursor, candidate_ids)
+
+    items = []
+    genre_df = {}
+    token_df = {}
+    for row in rows:
+        cid = row["id"]
+        genres = frozenset(normalize_genres(_json_list(row["genres_json"])))
+        for g in genres:
+            genre_df[g] = genre_df.get(g, 0) + 1
+
+        cast_ranks = {}
+        for idx, actor in enumerate(_json_list(row["cast_json"])):
+            cast_ranks.setdefault(actor.lower(), idx)
+
+        director = (row["director"] or "").strip()
+        release = row["release_date"] or ""
+        year = int(release[:4]) if str(release)[:4].isdigit() else 0
+        rating = row["imdb_rating"]
+        votes = row["rating_votes"] or 0
+        raw_tokens = _extract_text_tokens(row["title"], row["overview"])
+        for tok in raw_tokens:
+            token_df[tok] = token_df.get(tok, 0) + 1
+
+        items.append({
+            "id": cid,
+            "tmdb_id": row["tmdb_id"],
+            "type": row["type"],
+            "title": row["title"],
+            "original_title": row["original_title"],
+            "release_date": row["release_date"],
+            "poster_url": row["poster_url"],
+            "imdb_rating": rating,
+            "rating_votes": votes,
+            "genres": genres,
+            "cast_ranks": cast_ranks,
+            "director": director,
+            "director_key": director.lower(),
+            "countries": frozenset(country_map.get(cid, [])),
+            "primary_providers": frozenset(
+                p for p in provider_map.get(cid, []) if p != "others"
+            ),
+            "year": year,
+            "release": release,
+            "quality_bonus": _bayesian_quality_bonus(rating, votes),
+            "votes_penalty": min(0.55, 0.22 * math.log10(votes / 1e5)) if votes > 1e5 else 0.0,
+            "franchise": _extract_franchise_prefix(row["title"]),
+            "raw_tokens": raw_tokens,
+        })
+
+    total = len(items)
+    genre_idf = {
+        g: max(0.5, math.log(1.0 + total / (df + 1.0)))
+        for g, df in genre_df.items()
+    }
+    max_token_df = max(3, int(total * 0.15))
+    token_idf = {
+        tok: math.log(1.0 + total / (df + 1.0))
+        for tok, df in token_df.items()
+        if 2 <= df <= max_token_df
+    }
+    for item in items:
+        tokens = frozenset(tok for tok in item.pop("raw_tokens") if tok in token_idf)
+        item["tokens"] = tokens
+        item["token_norm"] = math.sqrt(sum(token_idf[tok] ** 2 for tok in tokens))
+
+    pool = {
+        "fingerprint": fingerprint,
+        "built_at": time.monotonic(),
+        "items": items,
+        "genre_idf": genre_idf,
+        "token_idf": token_idf,
+    }
+    with _related_cache_lock:
+        _related_pool_cache[media_type] = pool
+    return pool
 
 _CACHE_LOCK = threading.Lock()
 _stats_cache = {"expires": 0.0, "value": None}
@@ -1176,6 +1385,9 @@ def invalidate_stats_cache():
 def invalidate_catalog_caches():
     _cache_invalidate(_stats_cache)
     _count_cache_clear()
+    with _related_cache_lock:
+        _related_cache.clear()
+        _related_pool_cache.clear()
 
 
 def _related_payload(candidate, providers, reason=""):
@@ -1196,18 +1408,15 @@ def _related_payload(candidate, providers, reason=""):
 
 
 def get_related_titles(title_id, limit=12):
-    """基于题材/演员/导演/产地/平台交集的本地相似度推荐（5 分钟进程内缓存）。
+    """基于 IDF 题材加权 / 载体一致 / 番位演员 / 文本语义 / 贝叶斯口碑的本地相似度推荐。
 
-    打分：共享题材×4、同导演×4、共享演员×2、同产地×1、同平台×1；
-    没有任何题材/演员/导演交集的候选直接排除，数量不足时用同题材/同产地按评分兜底。
+    特性：
+    - 候选特征池按 type 进程内缓存，通过 <1ms 库指纹检测同步/编辑并自动失效；
+    - 题材先归一化并用语料 IDF 加权，降低“剧情”等泛标签噪声并强化“动画/纪录”等载体边界；
+    - 融合片名+简介 IDF 文本相似度与系列前缀，解决老数据缺少题材标签时的冷门/错配问题；
+    - 用贝叶斯评分适度奖励高口碑佳作，同时保留高票与年代差的多样性平滑，同导演≤2、同年≤4。
     """
     now = time.monotonic()
-    cache_key = (title_id, limit)
-    with _related_cache_lock:
-        cached = _related_cache.get(cache_key)
-        if cached and now - cached[0] < _RELATED_CACHE_TTL:
-            return cached[1]
-
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -1219,110 +1428,204 @@ def get_related_titles(title_id, limit=12):
         if not base_row:
             return []
         base = dict(base_row)
-        base_genres = set(_json_list(base.get("genres_json")))
-        base_cast = set(_json_list(base.get("cast_json")))
-        base_director = (base.get("director") or "").strip()
-        base_countries = set(_fetch_country_map(cursor, [title_id]).get(title_id, []))
-        base_providers = set(_fetch_provider_map(cursor, [title_id]).get(title_id, []))
+        media_type = base["type"]
+        fingerprint = _db_change_fingerprint(cursor, media_type)
+        cache_key = (title_id, limit, fingerprint)
+        with _related_cache_lock:
+            cached = _related_cache.get(cache_key)
+            if cached and now - cached[0] < _RELATED_CACHE_TTL:
+                return cached[1]
 
-        cursor.execute(f"""
-            SELECT t.id, t.tmdb_id, t.type, t.title, t.original_title, t.release_date,
-                   t.poster_url, t.imdb_rating, t.rating_votes, t.genres_json,
-                   t.cast_json, t.director, COALESCE(p.watch_status, '') AS watch_status
-            FROM titles t
-            LEFT JOIN title_preferences p ON t.tmdb_id = p.tmdb_id AND t.type = p.type
-            WHERE t.id != ?
-              AND t.type = ?
-              AND {DEFAULT_VISIBILITY_CONDITION_T}
-        """, (title_id, base["type"]))
-        candidates = [dict(row) for row in cursor.fetchall()]
-        candidate_ids = [item["id"] for item in candidates]
-        country_map = _fetch_country_map(cursor, candidate_ids)
-        provider_map = _fetch_provider_map(cursor, candidate_ids)
+        pool = _get_related_pool(cursor, media_type, fingerprint)
+        genre_idf = pool["genre_idf"]
+        token_idf = pool["token_idf"]
+
+        base_genres = frozenset(normalize_genres(_json_list(base.get("genres_json"))))
+        base_cast_ranks = {}
+        for idx, actor in enumerate(_json_list(base.get("cast_json"))):
+            base_cast_ranks.setdefault(actor.lower(), idx)
+        base_director_key = (base.get("director") or "").strip().lower()
+        base_countries = frozenset(_fetch_country_map(cursor, [title_id]).get(title_id, []))
+        base_primary_providers = frozenset(
+            p for p in _fetch_provider_map(cursor, [title_id]).get(title_id, []) if p != "others"
+        )
+        base_release = str(base.get("release_date") or "")
+        base_year = int(base_release[:4]) if base_release[:4].isdigit() else 0
+        base_franchise = _extract_franchise_prefix(base.get("title"))
+        base_tokens = frozenset(
+            tok for tok in _extract_text_tokens(base.get("title"), base.get("overview"))
+            if tok in token_idf
+        )
+        base_token_norm = math.sqrt(sum(token_idf[tok] ** 2 for tok in base_tokens))
+        has_base_meta = bool(base_genres or base_cast_ranks or base_director_key)
+
+        scored = []
+        for cand in pool["items"]:
+            if cand["id"] == title_id:
+                continue
+            cand_genres = cand["genres"]
+            shared_genres = base_genres & cand_genres
+            union_genres = base_genres | cand_genres
+            if union_genres:
+                shared_weight = sum(genre_idf.get(g, 1.0) for g in shared_genres)
+                union_weight = sum(genre_idf.get(g, 1.0) for g in union_genres)
+                weighted_jaccard = shared_weight / union_weight if union_weight > 0 else 0.0
+            else:
+                weighted_jaccard = 0.0
+
+            format_penalty = 0.0
+            if base_genres and cand_genres:
+                mismatch = sum(
+                    1 for fg in _FORMAT_GENRES
+                    if (fg in base_genres) != (fg in cand_genres)
+                )
+                if mismatch:
+                    format_penalty = min(1.8, 1.2 * mismatch)
+
+            same_director = bool(base_director_key) and base_director_key == cand["director_key"]
+            shared_cast = base_cast_ranks.keys() & cand["cast_ranks"].keys()
+            cast_score = 0.0
+            if shared_cast:
+                for actor in shared_cast:
+                    rank = min(base_cast_ranks[actor], cand["cast_ranks"][actor])
+                    cast_score += 1.8 if rank < 3 else (1.1 if rank < 6 else 0.7)
+                cast_score = min(5.0, cast_score)
+
+            same_franchise = bool(base_franchise) and base_franchise == cand["franchise"]
+
+            text_sim = 0.0
+            shared_token_count = 0
+            if base_token_norm > 0 and cand["token_norm"] > 0:
+                shared_tokens = base_tokens & cand["tokens"]
+                shared_token_count = len(shared_tokens)
+                if shared_token_count >= 2:
+                    dot = sum(token_idf[tok] ** 2 for tok in shared_tokens)
+                    text_sim = dot / (base_token_norm * cand["token_norm"])
+
+            if has_base_meta:
+                if not (
+                    shared_genres or shared_cast or same_director
+                    or same_franchise or text_sim >= 0.14
+                ):
+                    continue
+            else:
+                if not (same_franchise or (shared_token_count >= 2 and text_sim >= 0.06)):
+                    continue
+
+            shared_countries = base_countries & cand["countries"]
+            if not shared_countries:
+                country_score = 0.0
+            elif any(code != "US" for code in shared_countries):
+                country_score = 1.2
+            else:
+                country_score = 0.65
+
+            provider_score = 0.25 if (base_primary_providers & cand["primary_providers"]) else 0.0
+            year = cand["year"]
+            year_penalty = (
+                min(0.8, 0.25 * abs(year - base_year) / 10.0)
+                if year and base_year else 0.0
+            )
+
+            score = (
+                5.0 * weighted_jaccard
+                - format_penalty
+                + (2.8 if same_director else 0.0)
+                + cast_score
+                + (1.6 if same_franchise else 0.0)
+                + 3.2 * text_sim
+                + country_score
+                + provider_score
+                + cand["quality_bonus"]
+                - cand["votes_penalty"]
+                - year_penalty
+            )
+
+            if same_director:
+                reason = "同导演"
+            elif len(shared_cast) >= 2 or (shared_cast and not shared_genres):
+                reason = "同主演"
+            elif shared_genres or same_franchise or text_sim >= 0.10:
+                reason = "同题材"
+            elif shared_cast:
+                reason = "同主演"
+            else:
+                reason = "同产地"
+
+            scored.append((
+                score,
+                cand["imdb_rating"] or 0,
+                cand["release"],
+                cand,
+                reason,
+            ))
+
+        scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+
+        # 多样性上限：同一导演 ≤2、同年 ≤4，防止推荐列表被同一批作品占满
+        selected = []
+        director_counts = {}
+        year_counts = {}
+        for _, _, _, cand, reason in scored:
+            director = cand["director"]
+            year = cand["year"]
+            if director and director_counts.get(director, 0) >= 2:
+                continue
+            if year and year_counts.get(year, 0) >= 4:
+                continue
+            selected.append((cand, reason))
+            if director:
+                director_counts[director] = director_counts.get(director, 0) + 1
+            if year:
+                year_counts[year] = year_counts.get(year, 0) + 1
+            if len(selected) >= limit:
+                break
+
+        if len(selected) < limit and not base_genres:
+            # 仅当基础作品没有题材数据（老数据）时，才用同产地按贝叶斯口碑/评分兜底，避免塞入无关作品
+            picked = {cand["id"] for cand, _ in selected}
+            fallback = []
+            for cand in pool["items"]:
+                if cand["id"] == title_id or cand["id"] in picked:
+                    continue
+                if not (base_countries & cand["countries"]):
+                    continue
+                fallback.append((
+                    cand["quality_bonus"],
+                    cand["imdb_rating"] or 0,
+                    cand["release"],
+                    cand,
+                ))
+            fallback.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+            for _, _, _, cand in fallback:
+                selected.append((cand, "同产地"))
+                if len(selected) >= limit:
+                    break
+
+        selected_ids = [cand["id"] for cand, _ in selected]
+        status_map = {}
+        provider_map = {}
+        if selected_ids:
+            placeholders = ",".join("?" for _ in selected_ids)
+            cursor.execute(f"""
+                SELECT t.id, COALESCE(p.watch_status, '') AS watch_status
+                FROM titles t
+                LEFT JOIN title_preferences p ON t.tmdb_id = p.tmdb_id AND t.type = p.type
+                WHERE t.id IN ({placeholders})
+            """, selected_ids)
+            status_map = {row["id"]: row["watch_status"] for row in cursor.fetchall()}
+            provider_map = _fetch_provider_map(cursor, selected_ids)
+
+        results = [
+            _related_payload(
+                {**cand, "watch_status": status_map.get(cand["id"], "")},
+                provider_map.get(cand["id"], []),
+                reason,
+            )
+            for cand, reason in selected
+        ]
     finally:
         conn.close()
-
-    base_year = int(base.get("release_date", "")[:4]) if str(base.get("release_date") or "")[:4].isdigit() else 0
-
-    scored = []
-    fallback = []
-    for candidate in candidates:
-        candidate_id = candidate["id"]
-        candidate_genres = set(_json_list(candidate.get("genres_json")))
-        shared_genres = base_genres & candidate_genres
-        union_genres = base_genres | candidate_genres
-        jaccard = len(shared_genres) / len(union_genres) if union_genres else 0.0
-        shared_cast = base_cast & set(_json_list(candidate.get("cast_json")))
-        same_director = bool(base_director) and base_director == (candidate.get("director") or "").strip()
-        same_country = bool(base_countries & set(country_map.get(candidate_id, [])))
-        rating = candidate.get("imdb_rating") or 0
-        release = candidate.get("release_date") or ""
-        votes = candidate.get("rating_votes") or 0
-
-        if not (shared_genres or shared_cast or same_director):
-            continue
-        # WP-5 5.7：Jaccard 而非交集计数；票数与年代做多样性惩罚，避免每部喜剧都推出同几部经典
-        year = int(str(release)[:4]) if str(release)[:4].isdigit() else 0
-        score = (
-            4 * jaccard
-            + (4 if same_director else 0)
-            + min(len(shared_cast), 4) * 2
-            + (1 if same_country else 0)
-            - (0.5 * math.log10(votes / 1e4) if votes > 1e4 else 0)
-            - (0.3 * abs(year - base_year) / 10 if year and base_year else 0)
-        )
-        if shared_genres:
-            reason = "同题材"
-        elif same_director:
-            reason = "同导演"
-        elif shared_cast:
-            reason = "同主演"
-        else:
-            reason = "同产地"
-        scored.append((
-            score, rating, release,
-            _related_payload(candidate, provider_map.get(candidate_id, []), reason),
-            (candidate.get("director") or "").strip(), year,
-        ))
-
-    scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-    # 多样性上限：同一导演 ≤2、同年 ≤4，防止推荐列表被同一批作品占满
-    results = []
-    director_counts = {}
-    year_counts = {}
-    for item in scored:
-        director, year = item[4], item[5]
-        if director and director_counts.get(director, 0) >= 2:
-            continue
-        if year and year_counts.get(year, 0) >= 4:
-            continue
-        results.append(item[3])
-        if director:
-            director_counts[director] = director_counts.get(director, 0) + 1
-        if year:
-            year_counts[year] = year_counts.get(year, 0) + 1
-        if len(results) >= limit:
-            break
-
-    if len(results) < limit and not base_genres:
-        # 仅当基础作品没有题材数据（老数据）时，才用同产地按评分兜底，避免塞入无关作品
-        picked = {item["id"] for item in results}
-        for candidate in candidates:
-            if candidate["id"] in picked:
-                continue
-            same_country = bool(base_countries & set(country_map.get(candidate["id"], [])))
-            if not same_country:
-                continue
-            fallback.append((
-                candidate.get("imdb_rating") or 0,
-                candidate.get("release_date") or "",
-                _related_payload(candidate, provider_map.get(candidate["id"], [])),
-            ))
-        fallback.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        for item in fallback:
-            results.append(item[2])
-            if len(results) >= limit:
-                break
 
     with _related_cache_lock:
         _related_cache[cache_key] = (now, results)

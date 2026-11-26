@@ -216,6 +216,22 @@ def init_db():
         ON title_watch_offers(title_id, is_active, provider_id)
     """)
 
+    # L2 持久化缓存：TMDB 协同过滤推荐结果跨进程重启保留（默认 7 天）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS related_cache (
+            media_type TEXT NOT NULL CHECK(media_type IN ('movie', 'tv')),
+            tmdb_id INTEGER NOT NULL,
+            rec_ids_json TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            PRIMARY KEY (media_type, tmdb_id)
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_related_cache_expires
+        ON related_cache(expires_at)
+    """)
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sync_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
