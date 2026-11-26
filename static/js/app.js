@@ -1480,7 +1480,9 @@ function setViewMode(mode) {
         button.classList.toggle('active', active);
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
-    document.getElementById('titles-grid')?.setAttribute('data-view', mode);
+    const gridEl = document.getElementById('titles-grid');
+    gridEl?.setAttribute('data-view', mode);
+    const hasCachedPage1 = Boolean(cache.pages.get(pageCacheKey())?.pages?.get(1));
     // 重载已加载页数（分页缓存命中，秒级返回），渲染后滚回原锚点
     state.requestVersion += 1;
     const version = state.requestVersion;
@@ -1492,15 +1494,20 @@ function setViewMode(mode) {
     renderActiveFilters();
     document.getElementById('scroll-end').classList.add('hidden');
     document.getElementById('scroll-sentinel').classList.remove('hidden');
-    renderSkeletons();
+    if (hasCachedPage1) gridEl?.classList.add('is-switching');
+    else renderSkeletons();
     (async () => {
-        for (let index = 0; index < loadedPages; index += 1) {
-            if (version !== state.requestVersion || !state.hasMore) break;
-            await loadTitles();
-        }
-        if (anchorId != null) {
-            document.querySelector(`.title-card[data-title-id="${CSS.escape(String(anchorId))}"]`)
-                ?.scrollIntoView({ block: 'start', behavior: 'auto' });
+        try {
+            for (let index = 0; index < loadedPages; index += 1) {
+                if (version !== state.requestVersion || !state.hasMore) break;
+                await loadTitles();
+            }
+            if (anchorId != null) {
+                document.querySelector(`.title-card[data-title-id="${CSS.escape(String(anchorId))}"]`)
+                    ?.scrollIntoView({ block: 'start', behavior: 'auto' });
+            }
+        } finally {
+            gridEl?.classList.remove('is-switching');
         }
     })();
 }
@@ -1718,6 +1725,21 @@ function alertIcon() {
     return '<svg viewBox="0 0 24 24" fill="none" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.1"/></svg>';
 }
 
+function renderDetailSkeleton() {
+    return `<div class="detail-skeleton" aria-label="详情加载中">
+        <div class="detail-skeleton-hero"></div>
+        <div class="detail-skeleton-body">
+            <div class="detail-skeleton-poster"></div>
+            <div class="detail-skeleton-lines">
+                <div class="skeleton-line medium"></div>
+                <div class="skeleton-line short"></div>
+                <div class="skeleton-line medium"></div>
+                <div class="skeleton-line tiny"></div>
+            </div>
+        </div>
+    </div>`;
+}
+
 async function showDetail(id, options = {}) {
     const opts = typeof options === 'object' && options !== null ? options : {};
     // R4-06：打开详情前收起可能残留的状态菜单（不抢焦点，随后焦点进入详情）
@@ -1757,14 +1779,14 @@ async function showDetail(id, options = {}) {
     // 缓存命中（fresh 或 stale）时跳过 loading 占位，显著降低详情打开延迟
     const hasCached = Boolean(cache.detail.get(numId)?.data);
     if (!hasCached) {
-        content.innerHTML = '<div class="detail-loading"><span class="spinner" aria-label="详情加载中"></span></div>';
+        content.innerHTML = renderDetailSkeleton();
     }
     try {
         const detail = await getCachedDetail(numId);
         // F03：过期响应直接丢弃；关闭后也不再渲染
         if (requestId !== state.detailRequestId || state.activeDetailId !== numId) return;
         currentDetail = detail;
-        if (!modal.classList.contains('hidden')) renderDetail(currentDetail, requestId);
+        if (!modal.classList.contains('hidden')) renderDetail(currentDetail, requestId, Boolean(opts.replace));
     } catch (error) {
         if (requestId !== state.detailRequestId || state.activeDetailId !== numId) return;
         content.innerHTML = `<div class="detail-error"><div><p>${escapeHtml(userMessage(error))}</p><button type="button" class="btn-retry" data-action="retry-detail" data-title-id="${numId}">重新加载</button></div></div>`;
@@ -1947,19 +1969,28 @@ function personalSectionInnerHtml(title, status, options = {}) {
         ? ` data-entry-key="${escapeHtml(options.entryKey)}"`
         : '';
     if (!status) return '<p class="provider-note">加入片单后，可记录优先级、个人评分与备注。</p>';
+    const currentPriority = Number(title.priority || 0);
+    const hasRating = title.personal_rating != null && Number(title.personal_rating) > 0;
+    const ratingVal = hasRating ? Number(title.personal_rating) : 0;
+    const noteText = title.note || '';
     return `<div class="modal-section-title">我的记录</div>
         <div class="personal-fields" data-title-id="${title.id ?? ''}"${entryAttrs}>
-            <label class="personal-field"><span>优先级</span>
-                <select class="personal-select" data-personal="priority" data-saved-value="${Number(title.priority || 0)}">
-                    ${[[0, '普通'], [1, '优先'], [2, '必看']].map(([value, label]) => `<option value="${value}"${Number(title.priority || 0) === value ? ' selected' : ''}>${label}</option>`).join('')}
-                </select></label>
-            <label class="personal-field"><span>我的评分</span>
-                <select class="personal-select" data-personal="personal_rating" data-saved-value="${title.personal_rating == null ? '' : Number(title.personal_rating)}">
-                    <option value=""${title.personal_rating == null ? ' selected' : ''}>未评分</option>
-                    ${personalRatingOptionHtml(title.personal_rating)}
-                </select></label>
-            <label class="personal-field personal-field-note"><span>备注</span>
-                <input class="personal-note-input" type="text" maxlength="200" data-personal="note" data-saved-value="${escapeHtml(title.note || '')}" placeholder="例如：周末陪家人看" value="${escapeHtml(title.note || '')}"></label>
+            <div class="personal-field"><span>优先级</span>
+                <div class="priority-pills" role="group" aria-label="观看优先级" data-saved-value="${currentPriority}">
+                    ${[[0, '普通'], [1, '优先'], [2, '必看']].map(([value, label]) => `<button type="button" class="priority-pill${currentPriority === value ? ' active' : ''}" data-personal-priority="${value}" aria-pressed="${currentPriority === value ? 'true' : 'false'}">${label}</button>`).join('')}
+                </div>
+            </div>
+            <div class="personal-field"><span>我的评分</span>
+                <div class="rating-slider-wrap">
+                    <div class="rating-slider-head">
+                        <span class="rating-value${hasRating ? '' : ' is-empty'}" id="personal-rating-display">${hasRating ? `${ratingVal.toFixed(1)} 分` : '未评分'}</span>
+                        <button type="button" class="rating-clear-btn${hasRating ? '' : ' hidden'}" data-action="clear-personal-rating">清除</button>
+                    </div>
+                    <input class="rating-slider" type="range" min="0" max="10" step="0.5" value="${ratingVal}" data-personal="personal_rating" data-personal-slider data-saved-value="${hasRating ? ratingVal : ''}" aria-label="我的评分（0 到 10 分）">
+                </div>
+            </div>
+            <label class="personal-field personal-field-note"><div class="note-field-head"><span>备注</span><span class="note-counter" id="personal-note-counter">${noteText.length}/200</span></div>
+                <input class="personal-note-input" type="text" maxlength="200" data-personal="note" data-saved-value="${escapeHtml(noteText)}" placeholder="例如：周末陪家人看（按回车或失去焦点保存）" value="${escapeHtml(noteText)}"></label>
             ${title.watched_at ? `<p class="provider-note personal-watched">观看于 ${escapeHtml(formatVerifiedDate(title.watched_at))}</p>` : ''}
         </div>`;
 }
@@ -2154,7 +2185,7 @@ function placeDetailTitle() {
     }
 }
 
-function renderDetail(title, requestId = null) {
+function renderDetail(title, requestId = null, swapAnimate = false) {
     const rating = Number(title.imdb_rating) || 0;
     const tier = ratingTier(rating);
     const safePoster = sanitizeUrl(title.poster_url);
@@ -2175,11 +2206,12 @@ function renderDetail(title, requestId = null) {
     const cast = parseJsonList(title.cast_json).slice(0, 4);
     const castExtra = parseJsonList(title.cast_json).length > 4
         ? `<button type="button" class="link-more" data-action="expand-cast">展开全部 ${parseJsonList(title.cast_json).length} 位</button>` : '';
-    const genres = parseJsonList(title.genres_json).map(genreZh);
+    const rawGenres = parseJsonList(title.genres_json);
+    const genres = rawGenres.map(g => ({ raw: g, label: genreZh(g) }));
     const votes = Number(title.rating_votes || 0);
     const votesText = votes ? `${votes.toLocaleString()} 票` : '样本较少';
     const metaExtra = [
-        title.director ? `<span class="meta-tag">导演 ${escapeHtml(title.director)}</span>` : '',
+        title.director ? `<span class="meta-tag">导演 <button type="button" class="person-link" data-action="search-person" data-person="${escapeHtml(title.director)}">${escapeHtml(title.director)}</button></span>` : '',
         title.runtime ? `<span class="meta-tag">${title.type === 'movie' ? '' : '单集约 '}${Number(title.runtime)} 分钟</span>` : '',
         title.seasons ? `<span class="meta-tag">${Number(title.seasons)} 季${title.episodes ? ` · ${Number(title.episodes)} 集` : ''}</span>` : '',
     ].join('');
@@ -2194,13 +2226,14 @@ function renderDetail(title, requestId = null) {
     // R4-05：按统一引用比较，目录与快照都不依赖 Number(null)
     const isSurprise = titleMatchesSurpriseRef(title);
     const surpriseRow = isSurprise ? `<div class="surprise-row" role="status">
-        <p class="surprise-row-text">来自${escapeHtml(surpriseScopeLabel())}的随机推荐${title.runtime ? ` · ${title.type === 'movie' ? '' : '单集约 '}${Number(title.runtime)} 分钟` : ''}${genres.length ? ` · ${escapeHtml(genres[0])}` : ''}</p>
+        <p class="surprise-row-text">来自${escapeHtml(surpriseScopeLabel())}的随机推荐${title.runtime ? ` · ${title.type === 'movie' ? '' : '单集约 '}${Number(title.runtime)} 分钟` : ''}${genres.length ? ` · ${escapeHtml(genres[0].label)}` : ''}</p>
         <div class="surprise-row-buttons">
             <button type="button" class="btn-retry" data-action="surprise-again">换一部</button>
             <button type="button" class="btn-primary" data-action="surprise-tonight">今晚看这个</button>
         </div>
     </div>` : '';
-    document.getElementById('detail-content').innerHTML = `
+    const detailContentEl = document.getElementById('detail-content');
+    detailContentEl.innerHTML = `
         <div class="modal-hero">
             <div class="modal-hero-bg" ${heroBgStyle}></div>
             <div class="modal-hero-content">
@@ -2234,19 +2267,29 @@ function renderDetail(title, requestId = null) {
                 ${personalSection}
                 <div class="modal-section-title">剧情简介${zhQualityNote ? `<span class="zh-quality-note">${zhQualityNote}</span>` : ''}</div>
                 <div class="modal-overview">${escapeHtml(title.overview || '暂无剧情简介')}</div>
-                ${cast.length ? `<div class="modal-cast">主演：${cast.map(name => escapeHtml(name)).join(' / ')} ${castExtra}</div>` : ''}
-                ${genres.length ? `<div class="modal-genres">${genres.map(g => `<span class="genre-tag">${escapeHtml(g)}</span>`).join('')}</div>` : ''}
+                ${cast.length ? `<div class="modal-cast">主演：${cast.map(name => `<button type="button" class="person-link" data-action="search-person" data-person="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join(' / ')} ${castExtra}</div>` : ''}
+                ${genres.length ? `<div class="modal-genres">${genres.map(g => `<button type="button" class="genre-tag is-clickable" data-action="filter-genre" data-genre="${escapeHtml(g.label)}" title="点击筛选“${escapeHtml(g.label)}”">${escapeHtml(g.label)}</button>`).join('')}</div>` : ''}
                 ${channelSection ? `<div id="channels-section">${channelSection}</div>` : ''}
                 <div class="modal-section-title">资料与观看指南</div>
                 <div class="modal-links">${imdbLink}<a class="modal-link" href="https://www.themoviedb.org/${tmdbType}/${encodeURIComponent(title.tmdb_id)}" target="_blank" rel="noopener noreferrer">在 TMDB 查看 ${externalIcon()}</a>${watchLink}${trailer}</div>
                 <div class="modal-section-title">同类推荐</div>
-                <div class="related-row" id="related-row"><span class="related-loading">正在加载推荐…</span></div>
+                <div class="related-wrap">
+                    <button type="button" class="related-nav-btn prev" data-action="related-scroll" data-dir="-1" aria-label="向左滚动推荐"><svg viewBox="0 0 24 24" fill="none"><path d="m15 5-7 7 7 7"/></svg></button>
+                    <div class="related-row" id="related-row"><span class="related-loading">正在加载推荐…</span></div>
+                    <button type="button" class="related-nav-btn next" data-action="related-scroll" data-dir="1" aria-label="向右滚动推荐"><svg viewBox="0 0 24 24" fill="none"><path d="m9 5 7 7-7 7"/></svg></button>
+                </div>
                 <div class="modal-footer-nav">
                     <button type="button" class="btn-retry" data-action="detail-prev" disabled>‹ 上一部</button>
                     <button type="button" class="btn-retry" data-action="detail-next" disabled>下一部 ›</button>
                 </div>
             </div>
         </div>`;
+    if (swapAnimate && !reduceMotionQuery.matches) {
+        detailContentEl.classList.remove('is-swapping');
+        void detailContentEl.offsetWidth;
+        detailContentEl.classList.add('is-swapping');
+        detailContentEl.addEventListener('animationend', () => detailContentEl.classList.remove('is-swapping'), { once: true });
+    }
     placeDetailTitle(); // 7.1：按视口把标题放在装饰层（桌面）或正文顶部（手机）
     updateDetailNav();  // N06：底部“上一部/下一部”按钮与当前列表位置同步
     recordRecentView(title); // 详情渲染即计入最近浏览
@@ -2358,24 +2401,30 @@ async function importWatchlistFile(event) {
         .filter(([, count]) => count > 0)
         .map(([key, count]) => `${{ watch_status: '状态', priority: '优先级', note: '备注', personal_rating: '评分', watched_at: '观看日期' }[key] || key} ${count}`)
         .join(' · ');
-    const lines = [
-        '从备份恢复片单？',
-        `新增 ${preview.added} · 更新 ${preview.updated} · 无变化 ${preview.unchanged}`
-        + (preview.protected ? ` · 保护较新记录 ${preview.protected}` : '')
-        + (preview.invalid ? ` · 无效 ${preview.invalid}` : '')
-        + (preview.duplicate ? ` · 重复 ${preview.duplicate}` : ''),
-    ];
-    if (changedLabels) lines.push(`更新内容：${changedLabels}`);
-    if (preview.catalog_pending) lines.push(`目录待补全 ${preview.catalog_pending} 部（个人记录先恢复，之后自动补全）`);
-    lines.push('更新会覆盖备份中已有的状态 / 备注 / 评分 / 优先级。');
-    if (!window.confirm(lines.join('\n'))) return;
-    let force = false;
-    if (preview.protected > 0) {
-        force = window.confirm(
-            `检测到 ${preview.protected} 条本地记录比备份更新。\n`
-            + '确定：按备份覆盖这些较新记录；取消：保留本地较新记录。',
-        );
+    const notes = [];
+    if (changedLabels) notes.push(`更新字段：${changedLabels}`);
+    if (preview.catalog_pending) notes.push(`目录待补全 ${preview.catalog_pending} 部（个人记录先恢复，之后自动补全）`);
+    if (preview.invalid || preview.duplicate) {
+        notes.push(`${preview.invalid ? `无效 ${preview.invalid}` : ''}${preview.invalid && preview.duplicate ? ' · ' : ''}${preview.duplicate ? `重复 ${preview.duplicate}` : ''}`);
     }
+    const dialogResult = await openAppDialog({
+        title: '从备份恢复片单',
+        bodyHtml: `
+            <div class="app-dialog-stats">
+                <div class="app-dialog-stat"><strong>${Number(preview.added || 0)}</strong><span>新增</span></div>
+                <div class="app-dialog-stat"><strong>${Number(preview.updated || 0)}</strong><span>更新</span></div>
+                <div class="app-dialog-stat"><strong>${Number(preview.unchanged || 0)}</strong><span>无变化</span></div>
+            </div>
+            ${notes.length ? `<p class="app-dialog-hint">${escapeHtml(notes.join('；'))}</p>` : ''}
+            <p class="app-dialog-hint">更新会同步备份中的状态 / 备注 / 评分 / 优先级。</p>
+            ${preview.protected > 0 ? `<label class="app-dialog-check"><input type="checkbox" id="dialog-force-overwrite"><span>检测到 <strong>${Number(preview.protected)}</strong> 条本地记录比备份更新；勾选后按备份覆盖这些较新记录（默认保留本地记录）。</span></label>` : ''}
+        `,
+        confirmText: '开始恢复',
+        cancelText: '取消',
+        onConfirm: () => ({ force: Boolean(document.getElementById('dialog-force-overwrite')?.checked) }),
+    });
+    if (!dialogResult) return;
+    const force = Boolean(dialogResult.force);
     try {
         const result = await api('/api/watchlist/import', {
             method: 'POST',
@@ -2398,13 +2447,37 @@ async function importWatchlistFile(event) {
 
 /* F-import：显式 IMDb 补录入口，展示 imported / pending / failed */
 async function importByImdb(prefill = '') {
-    const reference = window.prompt('输入 IMDb ID 或作品链接（例如 tt1234567），补录到内容库', prefill || '');
-    if (!reference || !reference.trim()) return;
+    const dialogResult = await openAppDialog({
+        title: 'IMDb 补录作品',
+        bodyHtml: `
+            <p class="app-dialog-hint">输入 IMDb 编号或作品链接（例如 <code>tt1234567</code>），从 TMDB 检索并补录到内容库。</p>
+            <input type="text" class="app-dialog-input" id="dialog-imdb-input" value="${escapeHtml(prefill || '')}" placeholder="例如 tt0111161 或 https://www.imdb.com/title/tt0111161/" maxlength="200">
+        `,
+        confirmText: '开始补录',
+        cancelText: '取消',
+        onOpen: () => {
+            const input = document.getElementById('dialog-imdb-input');
+            input?.focus();
+            input?.select();
+        },
+        onConfirm: () => {
+            const val = document.getElementById('dialog-imdb-input')?.value?.trim() || '';
+            if (!val) {
+                document.getElementById('dialog-imdb-input')?.focus();
+                showToast('请输入 IMDb 编号或链接', 'warn');
+                return false;
+            }
+            return val;
+        },
+    });
+    if (!dialogResult) return;
+    const reference = String(dialogResult).trim();
+    if (!reference) return;
     showToast('正在补录，请稍候…');
     try {
         const result = await api('/api/titles/import', {
             method: 'POST',
-            body: JSON.stringify({ imdb: reference.trim() }),
+            body: JSON.stringify({ imdb: reference }),
         });
         if (result.status === 'pending') {
             showToast(`已进入待处理：${result.title || result.tmdb_id}（${result.pending_reason || '等待开分或补全资料'}）`, 'warn');
@@ -2452,14 +2525,18 @@ function recordRecentView(title) {
     renderRecentRow();
 }
 
-/* 渲染最近浏览：有数据才显示；默认折叠为单行，点击展开（5.9：不再挤占首屏正文） */
+/* 渲染最近浏览：开关按钮收在主导航右侧，有数据才显示；点击展开下方横排 */
 function renderRecentRow() {
     const row = document.getElementById('recent-row');
     const scroller = document.getElementById('recent-scroller');
+    const toggle = document.getElementById('recent-toggle');
     if (!row || !scroller) return;
     const list = getRecentViewed();
     if (!list.length) {
         row.classList.add('hidden');
+        row.classList.remove('is-open');
+        toggle?.classList.add('hidden');
+        toggle?.setAttribute('aria-expanded', 'false');
         scroller.innerHTML = '';
         return;
     }
@@ -2470,7 +2547,7 @@ function renderRecentRow() {
             <img src="${escapeHtml(item.poster || posterFallback)}" alt="" loading="lazy" decoding="async" width="48" height="72">
             <span>${escapeHtml(item.title)}</span>
         </button>`).join('');
-    row.classList.remove('hidden');
+    toggle?.classList.remove('hidden');
 }
 
 function toggleRecentRow(force) {
@@ -2479,6 +2556,7 @@ function toggleRecentRow(force) {
     if (!row || !toggle) return;
     const open = typeof force === 'boolean' ? force : !row.classList.contains('is-open');
     row.classList.toggle('is-open', open);
+    row.classList.toggle('hidden', !open);
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
@@ -2600,10 +2678,10 @@ function applyStatusCounts(oldStatus, newStatus) {
     if (oldStatus === newStatus) return;
     if (oldStatus) bumpCountEl(document.getElementById(`status-count-${oldStatus}`), -1);
     if (newStatus) bumpCountEl(document.getElementById(`status-count-${newStatus}`), +1);
-    // “我的片单”汇总 = 三个状态桶之和：进出片单时 ±1
-    const listEl = document.querySelector('[data-stat="list"]');
-    if (!oldStatus && newStatus) bumpCountEl(listEl, +1);
-    if (oldStatus && !newStatus) bumpCountEl(listEl, -1);
+    // “我的片单”汇总 = 三个状态桶之和：进出片单时同步更新主导航计数
+    const libCountEl = document.getElementById('status-count-library');
+    if (!oldStatus && newStatus) bumpCountEl(libCountEl, +1);
+    if (oldStatus && !newStatus) bumpCountEl(libCountEl, -1);
 }
 
 /* 同步模态内状态选择器的高亮（目录详情与目录缺失详情共用） */
@@ -2722,7 +2800,20 @@ async function setTitleStatus(id, watchStatus, sourceButton, identity = null) {
         // F04：状态写成功后失效全部分页缓存，避免其他视图/排序沿用旧成员集合
         invalidatePageCache();
         invalidatePersistentDataCache();
-        showToast(watchStatus ? `已加入“${watchStatusNames[watchStatus]}”` : '已从片单移除');
+        if (watchStatus) {
+            showToast(`已加入“${watchStatusNames[watchStatus]}”`);
+        } else if (snapshot.oldStatus) {
+            const restoreStatus = snapshot.oldStatus;
+            const restoreIdentity = ref.key ? { type: ref.ref.type, tmdbId: ref.ref.tmdbId } : null;
+            const restoreId = ref.key ? null : ref.id;
+            showToast('已从片单移除', 'success', {
+                action: '撤销',
+                duration: 5200,
+                onAction: () => setTitleStatus(restoreId, restoreStatus, null, restoreIdentity),
+            });
+        } else {
+            showToast('已从片单移除');
+        }
         // 后台校正统计计数（乐观值通常已一致，仅防并发漂移）
         loadStats().catch(() => {});
         // 当前视图按状态过滤且成员集合变化 → 静默刷新列表
@@ -2816,8 +2907,16 @@ function updateCardStatus(idOrRef, status) {
     poster.querySelector('.status-badge')?.remove();
     if (status) poster.insertAdjacentHTML('afterbegin', `<span class="status-badge" data-status="${status}">${watchStatusNames[status]}</span>`);
     const trigger = card.querySelector('.status-menu-trigger');
-    trigger.classList.toggle('has-status', Boolean(status));
-    trigger.innerHTML = bookmarkIcon(status);
+    if (trigger) {
+        trigger.classList.toggle('has-status', Boolean(status));
+        trigger.innerHTML = bookmarkIcon(status);
+        if (!reduceMotionQuery.matches) {
+            trigger.classList.remove('is-pop');
+            void trigger.offsetWidth;
+            trigger.classList.add('is-pop');
+            setTimeout(() => trigger.classList.remove('is-pop'), 320);
+        }
+    }
     card.querySelectorAll('.status-menu [data-set-status]').forEach(button => {
         button.classList.toggle('active', button.dataset.setStatus === status);
     });
@@ -2950,7 +3049,14 @@ async function refreshMissingEntry(key) {
 async function removeMissingEntry(key, sourceButton) {
     const entry = state.snapshotEntries.get(key);
     if (!entry) return;
-    if (!window.confirm('把这部作品移出片单？保存的个人记录会一并删除。')) return;
+    const confirmed = await openAppDialog({
+        title: '移出片单',
+        bodyHtml: `<p>确定把《<strong>${escapeHtml(entry.title || '这部作品')}</strong>》移出片单吗？</p><p class="app-dialog-hint">保存的优先级、个人评分与备注会一并删除。</p>`,
+        confirmText: '移出片单',
+        cancelText: '保留',
+        danger: true,
+    });
+    if (!confirmed) return;
     const [type, tmdbId] = key.split(':');
     try {
         await api(`/api/watchlist/${type}/${tmdbId}/status`, {
@@ -3135,7 +3241,14 @@ const SWIPE_VELOCITY = 0.4;       // px/ms
 
 function setupModalSwipe() {
     const panel = document.querySelector('.modal-panel');
-    if (!panel) return;
+    const overlay = document.getElementById('detail-modal');
+    if (!panel || !overlay) return;
+    const resetDragStyles = () => {
+        panel.style.transition = '';
+        panel.style.transform = '';
+        panel.style.opacity = '';
+        overlay.style.backgroundColor = '';
+    };
     panel.addEventListener('touchstart', (e) => {
         // 仅在移动端底部 sheet 模式下激活
         if (!window.matchMedia('(max-width: 680px)').matches) return;
@@ -3143,6 +3256,7 @@ function setupModalSwipe() {
         swipeState = {
             startX: t.clientX, startY: t.clientY, startTime: Date.now(),
             dy: 0, dx: 0, dragging: false, horizontal: false,
+            canPull: panel.scrollTop <= 0,
         };
     }, { passive: true });
     panel.addEventListener('touchmove', (e) => {
@@ -3156,6 +3270,8 @@ function setupModalSwipe() {
             swipeState.horizontal = true;
         }
         if (swipeState.horizontal) return;
+        // 仅当滚动面板处于顶部时才允许下滑关闭，避免从底部向上滑回时误关闭详情
+        if (!swipeState.canPull || panel.scrollTop > 0) return;
         if (dy > 6 && !swipeState.dragging) {
             swipeState.dragging = true;
             panel.style.transition = 'none';
@@ -3165,16 +3281,16 @@ function setupModalSwipe() {
             // 非线性阻尼：越快越难拉
             const dampened = dy * Math.max(0.35, 1 - dy / 500);
             panel.style.transform = `translateY(${dampened}px)`;
+            panel.style.opacity = String(Math.max(0.75, 1 - dampened / 420));
             e.preventDefault();
         }
     }, { passive: false });
-    panel.addEventListener('touchend', () => {
+    const endSwipe = () => {
         if (!swipeState) return;
         const { dy, dx, dragging, horizontal, startTime } = swipeState;
         const elapsed = Date.now() - startTime;
         const velocity = dy / Math.max(elapsed, 1);
-        panel.style.transition = '';
-        panel.style.transform = '';
+        resetDragStyles();
         swipeState = null;
         if (horizontal) {
             if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) {
@@ -3185,7 +3301,9 @@ function setupModalSwipe() {
         if (dragging && (dy > SWIPE_THRESHOLD || velocity > SWIPE_VELOCITY)) {
             closeModal();
         }
-    }, { passive: true });
+    };
+    panel.addEventListener('touchend', endSwipe, { passive: true });
+    panel.addEventListener('touchcancel', endSwipe, { passive: true });
 }
 
 function hasActiveFilters() {
@@ -3382,14 +3500,15 @@ function updateFilterSummary() {
         parts.push(state.order === 'asc' ? `${sortLabel}↑` : `${sortLabel}↓`);
     }
     el.textContent = parts.join(' · ');
-    // WP-3：筛选按钮上的计数
+    // WP-3：筛选按钮上的计数与高亮状态
     const count = document.getElementById('filter-more-count');
+    const total = state.genres.length + (state.years ? 1 : 0) + (state.region ? 1 : 0)
+        + (state.rating ? 1 : 0) + (state.maxRuntime ? 1 : 0);
     if (count) {
-        const total = state.genres.length + (state.years ? 1 : 0) + (state.region ? 1 : 0)
-            + (state.rating ? 1 : 0) + (state.maxRuntime ? 1 : 0);
         count.textContent = total ? `(${total})` : '';
         count.classList.toggle('hidden', !total);
     }
+    document.getElementById('filter-more-btn')?.classList.toggle('has-active', total > 0);
 }
 
 function setupFilterToggle() {
@@ -3814,7 +3933,89 @@ function setupEvents() {
         if (action?.dataset.action === 'snapshot-remove') { removeMissingEntry(action.dataset.entryKey, action); return; }
         if (action?.dataset.action === 'expand-cast') {
             const full = parseJsonList(currentDetail?.cast_json);
-            if (full.length) action.closest('.modal-cast').innerHTML = `主演：${full.map(name => escapeHtml(name)).join(' / ')}`;
+            if (full.length) action.closest('.modal-cast').innerHTML = `主演：${full.map(name => `<button type="button" class="person-link" data-action="search-person" data-person="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join(' / ')}`;
+            return;
+        }
+        if (action?.dataset.action === 'filter-genre') {
+            const genreName = action.dataset.genre || '';
+            if (!genreName) return;
+            closeModal({ force: true });
+            if (state.section !== 'discover') setSection('discover');
+            state.genres = [genreName];
+            resetAndLoad();
+            showToast(`已筛选题材：${genreZh(genreName)}`);
+            return;
+        }
+        if (action?.dataset.action === 'search-person') {
+            const person = action.dataset.person || '';
+            if (!person) return;
+            closeModal({ force: true });
+            if (state.section !== 'discover') setSection('discover');
+            state.search = person;
+            resetAndLoad();
+            showToast(`已搜索：${person}`);
+            return;
+        }
+        if (action?.dataset.action === 'related-scroll') {
+            const dir = Number(action.dataset.dir) || 1;
+            document.getElementById('related-row')?.scrollBy({
+                left: dir * 320,
+                behavior: reduceMotionQuery.matches ? 'auto' : 'smooth',
+            });
+            return;
+        }
+        if (action?.dataset.action === 'close-popover') { closeFilterPopover(true); return; }
+        if (action?.dataset.action === 'reset-popover-filters') {
+            state.genres = [];
+            state.years = '';
+            state.region = '';
+            state.rating = 0;
+            state.maxRuntime = 0;
+            resetAndLoad({ scroll: false });
+            return;
+        }
+        const priorityBtn = event.target.closest('[data-personal-priority]');
+        if (priorityBtn) {
+            const group = priorityBtn.closest('.priority-pills');
+            const fields = priorityBtn.closest('.personal-fields');
+            const val = priorityBtn.dataset.personalPriority;
+            group?.querySelectorAll('[data-personal-priority]').forEach(btn => {
+                const active = btn === priorityBtn;
+                btn.classList.toggle('active', active);
+                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+            });
+            const entryKey = fields?.dataset.entryKey;
+            if (entryKey) {
+                const [entryType, entryTmdb] = entryKey.split(':');
+                savePersonalField(null, 'priority', val, group, {
+                    type: entryType, tmdbId: Number(entryTmdb),
+                });
+            } else {
+                const titleId = fields?.dataset.titleId || state.activeDetailId;
+                if (titleId) savePersonalField(Number(titleId), 'priority', val, group);
+            }
+            return;
+        }
+        if (action?.dataset.action === 'clear-personal-rating') {
+            const fields = action.closest('.personal-fields');
+            const slider = fields?.querySelector('[data-personal-slider]');
+            const display = document.getElementById('personal-rating-display');
+            if (slider) slider.value = '0';
+            if (display) {
+                display.textContent = '未评分';
+                display.classList.add('is-empty');
+            }
+            action.classList.add('hidden');
+            const entryKey = fields?.dataset.entryKey;
+            if (entryKey) {
+                const [entryType, entryTmdb] = entryKey.split(':');
+                savePersonalField(null, 'personal_rating', '', slider, {
+                    type: entryType, tmdbId: Number(entryTmdb),
+                });
+            } else {
+                const titleId = fields?.dataset.titleId || state.activeDetailId;
+                if (titleId) savePersonalField(Number(titleId), 'personal_rating', '', slider);
+            }
             return;
         }
         if (action?.dataset.action === 'goto-channels') {
@@ -3838,6 +4039,24 @@ function setupEvents() {
         if (!event.target.closest('.mode-split')) closeFreshMenu();
     });
 
+    document.addEventListener('input', event => {
+        if (event.target.matches('[data-personal-slider]')) {
+            const val = Number(event.target.value);
+            const display = document.getElementById('personal-rating-display');
+            const clearBtn = event.target.closest('.rating-slider-wrap')?.querySelector('[data-action="clear-personal-rating"]');
+            if (display) {
+                display.textContent = val > 0 ? `${val.toFixed(1)} 分` : '未评分';
+                display.classList.toggle('is-empty', val <= 0);
+            }
+            clearBtn?.classList.toggle('hidden', val <= 0);
+            return;
+        }
+        if (event.target.matches('.personal-note-input')) {
+            const counter = document.getElementById('personal-note-counter');
+            if (counter) counter.textContent = `${event.target.value.length}/200`;
+        }
+    });
+
     // 6.1：详情内切换观看地区 → 持久化并重渲染渠道列表；6.7：个人记录字段即时保存
     document.addEventListener('change', event => {
         if (event.target.id === 'viewing-region-select') {
@@ -3855,16 +4074,19 @@ function setupEvents() {
         const field = event.target.closest('[data-personal]');
         if (field) {
             const fields = field.closest('.personal-fields');
+            const rawVal = field.hasAttribute('data-personal-slider')
+                ? (Number(field.value) <= 0 ? '' : String(Number(field.value)))
+                : field.value;
             const entryKey = fields?.dataset.entryKey;
             if (entryKey) {
                 const [entryType, entryTmdb] = entryKey.split(':');
-                savePersonalField(null, field.dataset.personal, field.value, field, {
+                savePersonalField(null, field.dataset.personal, rawVal, field, {
                     type: entryType, tmdbId: Number(entryTmdb),
                 });
                 return;
             }
             const titleId = fields?.dataset.titleId || state.activeDetailId;
-            if (titleId) savePersonalField(Number(titleId), field.dataset.personal, field.value, field);
+            if (titleId) savePersonalField(Number(titleId), field.dataset.personal, rawVal, field);
             return;
         }
         if (event.target.id === 'batch-priority') {
@@ -3879,6 +4101,9 @@ function setupEvents() {
     document.getElementById('import-button')?.addEventListener('click', () => document.getElementById('import-file')?.click());
     document.getElementById('import-file')?.addEventListener('change', importWatchlistFile);
     document.getElementById('imdb-import-btn')?.addEventListener('click', () => importByImdb());
+    document.getElementById('wall-menu-btn')?.addEventListener('click', () => openWall());
+    document.getElementById('shortcuts-menu-btn')?.addEventListener('click', () => toggleShortcuts(true));
+    document.getElementById('footer-shortcuts-btn')?.addEventListener('click', () => toggleShortcuts(true));
     document.getElementById('close-modal').addEventListener('click', closeModal);
     document.getElementById('surprise-btn')?.addEventListener('click', surprisePick);
     document.getElementById('nav-prev')?.addEventListener('click', () => navigateDetail(-1));
@@ -3939,23 +4164,40 @@ function setupEvents() {
         const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
         const shortcutsOpen = !document.getElementById('shortcuts-overlay')?.classList.contains('hidden');
         const dataStatusOpen = !document.getElementById('data-status-overlay')?.classList.contains('hidden');
+        const appDialogOpen = !document.getElementById('app-dialog-overlay')?.classList.contains('hidden');
+        const wallOpen = document.body.classList.contains('wall-open');
+        if (event.key === 'Enter' && document.activeElement?.classList.contains('personal-note-input')) {
+            event.preventDefault();
+            document.activeElement.blur();
+            return;
+        }
+        if (event.key === 'Enter' && appDialogOpen && !document.activeElement?.closest('button')) {
+            event.preventDefault();
+            document.getElementById('app-dialog-confirm')?.click();
+            return;
+        }
         // F14：详情或快捷键浮层打开时禁用全局快捷键，避免操作逃出当前浮层
-        if (event.key === '/' && !typing && !modalOpen && !shortcutsOpen) {
+        if (event.key === '/' && !typing && !modalOpen && !shortcutsOpen && !appDialogOpen && !dataStatusOpen) {
             event.preventDefault();
             searchInput.focus();
         }
+        if ((event.key === '1' || event.key === '2') && !typing && !modalOpen && !shortcutsOpen && !appDialogOpen && !dataStatusOpen && !wallOpen) {
+            event.preventDefault();
+            setSection(event.key === '1' ? 'discover' : 'library');
+        }
         // 键盘帮助浮层：? 打开，Esc 关闭（优先于模态关闭）
-        if (event.key === '?' && !typing && !modalOpen && !shortcutsOpen) {
+        if (event.key === '?' && !typing && !modalOpen && !shortcutsOpen && !appDialogOpen && !dataStatusOpen) {
             event.preventDefault();
             toggleShortcuts(true);
             return;
         }
         if (event.key === 'Escape') {
+            if (appDialogOpen) { closeAppDialog(null); return; }
             if (shortcutsOpen) { toggleShortcuts(false); return; }
             if (dataStatusOpen) { toggleDataStatus(false); return; }
             if (!document.getElementById('admin-menu')?.classList.contains('hidden')) { closeAdminMenu(true); return; }
             if (document.body.classList.contains('sidebar-open')) { window.__closeSidebar?.(); return; }
-            if (document.body.classList.contains('wall-open')) { closeWall(); return; }
+            if (wallOpen) { closeWall(); return; }
             if (!document.getElementById('fresh-menu')?.classList.contains('hidden')) { closeFreshMenu(true); return; }
             if (!document.getElementById('filter-popover')?.classList.contains('hidden')) { closeFilterPopover(true); return; }
             if (!document.getElementById('surprise-scope-menu')?.classList.contains('hidden')) { closeSurpriseScopeMenu(true); return; }
@@ -3964,26 +4206,27 @@ function setupEvents() {
             else closeModal();
         }
         // 海报墙锁屏开关 W
-        if ((event.key === 'w' || event.key === 'W') && !typing && !modalOpen && !shortcutsOpen) {
+        if ((event.key === 'w' || event.key === 'W') && !typing && !modalOpen && !shortcutsOpen && !appDialogOpen && !dataStatusOpen) {
             event.preventDefault();
-            if (document.body.classList.contains('wall-open')) closeWall();
+            if (wallOpen) closeWall();
             else openWall();
         }
         // 视图切换快捷键 G/L（打开帮助浮层时也生效，方便直接试用）
-        if ((event.key === 'g' || event.key === 'G' || event.key === 'l' || event.key === 'L') && !typing && !modalOpen) {
+        if ((event.key === 'g' || event.key === 'G' || event.key === 'l' || event.key === 'L') && !typing && !modalOpen && !appDialogOpen && !dataStatusOpen) {
             event.preventDefault();
             setViewMode(state.viewMode === 'grid' ? 'list' : 'grid');
         }
-        if (modalOpen && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !typing) {
+        if (modalOpen && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !typing && !appDialogOpen) {
             event.preventDefault();
             navigateDetail(event.key === 'ArrowLeft' ? -1 : 1);
         }
-        if (!modalOpen && (event.key === 'r' || event.key === 'R') && !typing && !shortcutsOpen) {
+        if (!modalOpen && (event.key === 'r' || event.key === 'R') && !typing && !shortcutsOpen && !appDialogOpen && !dataStatusOpen && !wallOpen) {
             event.preventDefault();
             surprisePick();
         }
         if (event.key === 'Tab') {
-            if (shortcutsOpen) trapFocusWithin(document.getElementById('shortcuts-overlay'), event);
+            if (appDialogOpen) trapFocusWithin(document.getElementById('app-dialog-overlay'), event);
+            else if (shortcutsOpen) trapFocusWithin(document.getElementById('shortcuts-overlay'), event);
             else if (dataStatusOpen) trapFocusWithin(document.getElementById('data-status-overlay'), event);
             else if (document.body.classList.contains('sidebar-open')) trapFocusWithin(document.querySelector('body > .filter-panel.drawer-mode'), event);
             else if (modalOpen) trapModalFocus(event);
@@ -4126,6 +4369,10 @@ function setupCardHoverPrefetch() {
 function showToast(message, type = 'success', options = {}) {
     const region = document.getElementById('toast-region');
     const backToTop = document.getElementById('back-to-top');
+    // 最多同时保留 3 条 toast，避免连续操作堆积遮挡屏幕
+    while (region.children.length >= 3) {
+        region.firstElementChild?.remove();
+    }
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
@@ -4133,7 +4380,15 @@ function showToast(message, type = 'success', options = {}) {
     text.className = 'toast-text';
     text.textContent = message;
     toast.appendChild(text);
-    // N01：支持一个可操作按钮（如“已有新版本，点击刷新”）
+    const dismiss = () => {
+        if (!toast.isConnected || toast.classList.contains('is-leaving')) return;
+        toast.classList.add('is-leaving');
+        setTimeout(() => {
+            toast.remove();
+            if (!region.children.length) backToTop?.classList.remove('shifted');
+        }, 180);
+    };
+    // N01：支持一个可操作按钮（如“已有新版本，点击刷新” / “撤销”）
     if (options.action && typeof options.onAction === 'function') {
         toast.classList.add('has-action');
         const actionButton = document.createElement('button');
@@ -4141,17 +4396,77 @@ function showToast(message, type = 'success', options = {}) {
         actionButton.className = 'toast-action';
         actionButton.textContent = options.action;
         actionButton.addEventListener('click', () => {
-            toast.remove();
+            dismiss();
             options.onAction();
         });
         toast.appendChild(actionButton);
     }
     region.appendChild(toast);
     if (backToTop?.classList.contains('visible')) backToTop.classList.add('shifted');
-    setTimeout(() => {
-        toast.remove();
-        if (!region.children.length) backToTop?.classList.remove('shifted');
-    }, options.duration || 3800);
+    setTimeout(dismiss, options.duration || 3800);
+}
+
+/* 应用内玻璃模态确认/输入弹窗，替代生硬的原生 prompt / confirm */
+let appDialogResolver = null;
+let appDialogPrevFocus = null;
+
+function closeAppDialog(result = null) {
+    const overlay = document.getElementById('app-dialog-overlay');
+    if (!overlay || overlay.classList.contains('hidden')) return;
+    overlay.classList.add('hidden');
+    const resolve = appDialogResolver;
+    appDialogResolver = null;
+    appDialogPrevFocus?.focus?.();
+    appDialogPrevFocus = null;
+    if (resolve) resolve(result);
+}
+
+function openAppDialog({
+    title = '确认操作',
+    bodyHtml = '',
+    confirmText = '确定',
+    cancelText = '取消',
+    danger = false,
+    onOpen = null,
+    onConfirm = null,
+} = {}) {
+    const overlay = document.getElementById('app-dialog-overlay');
+    const titleEl = document.getElementById('app-dialog-title');
+    const bodyEl = document.getElementById('app-dialog-body');
+    const footEl = document.getElementById('app-dialog-foot');
+    if (!overlay || !titleEl || !bodyEl || !footEl) return Promise.resolve(null);
+    if (appDialogResolver) closeAppDialog(null);
+
+    appDialogPrevFocus = document.activeElement;
+    titleEl.textContent = title;
+    bodyEl.innerHTML = bodyHtml;
+    footEl.innerHTML = `
+        <button type="button" class="btn-retry" id="app-dialog-cancel">${escapeHtml(cancelText)}</button>
+        <button type="button" class="${danger ? 'btn-danger' : 'btn-primary'}" id="app-dialog-confirm">${escapeHtml(confirmText)}</button>
+    `;
+    overlay.classList.remove('hidden');
+
+    const closeBtn = document.getElementById('close-app-dialog');
+    const cancelBtn = document.getElementById('app-dialog-cancel');
+    const confirmBtn = document.getElementById('app-dialog-confirm');
+    if (closeBtn) closeBtn.onclick = () => closeAppDialog(null);
+    if (cancelBtn) cancelBtn.onclick = () => closeAppDialog(null);
+    overlay.onclick = event => {
+        if (event.target === overlay) closeAppDialog(null);
+    };
+    if (confirmBtn) {
+        confirmBtn.onclick = () => {
+            const payload = onConfirm ? onConfirm() : true;
+            if (payload === false) return;
+            closeAppDialog(payload);
+        };
+    }
+    if (typeof onOpen === 'function') onOpen();
+    else confirmBtn?.focus();
+
+    return new Promise(resolve => {
+        appDialogResolver = resolve;
+    });
 }
 
 /* ---------- 海报墙锁屏（Netflix 屏保风格） ---------- */
